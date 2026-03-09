@@ -1,5 +1,6 @@
 mod audio_config;
 mod audio_engine;
+mod vad;
 
 use audio_engine::{chunk_ms_to_samples, parse_chunk_ms, AudioDevice, AudioEngine, Command};
 use std::sync::mpsc;

@@ -14,10 +14,14 @@ use std::time::Instant;
 use tauri::{AppHandle, Emitter};
 
 use crate::audio_config;
+use crate::vad::{VadDecision, VadProcessor, VadState};
 
 const MODEL_PATH: &str = "/Users/edmistond/Downloads/prs-nemotron";
+const VAD_MODEL_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/models/silero_vad.onnx");
 const ASR_SAMPLE_RATE: usize = 16000;
+const VAD_FRAME_SIZE: usize = 512;
 const DEFAULT_CHUNK_MS: usize = 560;
+const EMPTY_RESET_THRESHOLD: u32 = 10;
 
 /// Convert a chunk duration in milliseconds to samples at 16kHz.
 /// Valid Nemotron chunk sizes: 80, 160, 560, 1120 ms.
@@ -331,7 +335,19 @@ impl AudioEngine {
                  asr_buf_len INTEGER,
                  text_empty INTEGER,
                  text_preview TEXT,
-                 error_msg TEXT
+                 error_msg TEXT,
+                 vad_state TEXT
+             );
+             CREATE TABLE IF NOT EXISTS vad_events (
+                 id INTEGER PRIMARY KEY,
+                 session_id INTEGER,
+                 ts TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', 'localtime')),
+                 uptime_ms INTEGER,
+                 event_type TEXT,
+                 pre_speech_samples INTEGER,
+                 speech_duration_ms REAL,
+                 consecutive_empty INTEGER,
+                 probability REAL
              );",
         )?;
         Ok(conn)
@@ -357,6 +373,16 @@ impl AudioEngine {
         let mut model = Nemotron::from_pretrained(Path::new(MODEL_PATH), None)?;
         println!("Model loaded.");
 
+        println!("Loading Silero VAD model from {}...", VAD_MODEL_PATH);
+        let mut vad = VadProcessor::new(
+            Path::new(VAD_MODEL_PATH),
+            0.5,   // threshold
+            500,   // min_silence_duration_ms
+            250,   // min_speech_duration_ms
+            500,   // pre_speech_ms (ring buffer = 500ms)
+        )?;
+        println!("VAD model loaded.");
+
         let mut resampler: Option<FftFixedIn<f32>> = if needs_resample {
             Some(FftFixedIn::<f32>::new(
                 input_rate,
@@ -370,8 +396,11 @@ impl AudioEngine {
         };
 
         let mut asr_buffer: Vec<f32> = Vec::with_capacity(chunk_size * 2);
+        let mut vad_leftover: Vec<f32> = Vec::new();
         let loop_start = Instant::now();
         let mut chunk_num: u64 = 0;
+        let mut consecutive_empty: u32 = 0;
+        let mut speech_start_uptime_ms: Option<i64> = None;
 
         loop {
             if stop_flag.load(Ordering::Relaxed) {
@@ -396,7 +425,7 @@ impl AudioEngine {
             let drain_count = drained.len();
             let drain_audio_ms = drain_count as f64 / input_rate as f64 * 1000.0;
 
-            let (samples_16k, resample_in, resample_out, resample_leftover) =
+            let (samples_16k, _resample_in, _resample_out, _resample_leftover) =
                 if let Some(ref mut resampler) = resampler {
                     let rs_chunk = resampler.input_frames_next();
                     let mut resampled = Vec::new();
@@ -437,7 +466,86 @@ impl AudioEngine {
                     (drained, len, len, 0usize)
                 };
 
-            asr_buffer.extend_from_slice(&samples_16k);
+            // --- VAD gating ---
+            // Prepend any leftover from last iteration
+            let mut vad_input = std::mem::take(&mut vad_leftover);
+            vad_input.extend_from_slice(&samples_16k);
+
+            let mut offset = 0;
+            while offset + VAD_FRAME_SIZE <= vad_input.len() {
+                let frame = &vad_input[offset..offset + VAD_FRAME_SIZE];
+                offset += VAD_FRAME_SIZE;
+
+                let (decision, _prob) = match vad.process_frame(frame) {
+                    Ok(result) => result,
+                    Err(e) => {
+                        let _ = db.execute(
+                            "INSERT INTO events (session_id, uptime_ms, event_type, error_msg)
+                             VALUES (?1, ?2, 'vad_error', ?3)",
+                            rusqlite::params![session_id, loop_start.elapsed().as_millis() as i64, e.to_string()],
+                        );
+                        continue;
+                    }
+                };
+
+                match decision {
+                    VadDecision::Silence => {
+                        // Audio is in the ring buffer; nothing to do
+                    }
+                    VadDecision::SpeechStarted { pre_speech_samples } => {
+                        let uptime = loop_start.elapsed().as_millis() as i64;
+                        speech_start_uptime_ms = Some(uptime);
+                        consecutive_empty = 0;
+
+                        let _ = db.execute(
+                            "INSERT INTO vad_events (session_id, uptime_ms, event_type, pre_speech_samples)
+                             VALUES (?1, ?2, 'speech_start', ?3)",
+                            rusqlite::params![session_id, uptime, pre_speech_samples.len() as i64],
+                        );
+
+                        // Prepend ring buffer contents then this frame
+                        asr_buffer.extend_from_slice(&pre_speech_samples);
+                        asr_buffer.extend_from_slice(frame);
+                    }
+                    VadDecision::SpeechContinues => {
+                        asr_buffer.extend_from_slice(frame);
+                    }
+                    VadDecision::SpeechEnded => {
+                        asr_buffer.extend_from_slice(frame);
+
+                        let uptime = loop_start.elapsed().as_millis() as i64;
+                        let duration_ms = speech_start_uptime_ms
+                            .map(|start| (uptime - start) as f64)
+                            .unwrap_or(0.0);
+
+                        let _ = db.execute(
+                            "INSERT INTO vad_events (session_id, uptime_ms, event_type, speech_duration_ms, consecutive_empty)
+                             VALUES (?1, ?2, 'speech_end', ?3, ?4)",
+                            rusqlite::params![session_id, uptime, duration_ms, consecutive_empty as i64],
+                        );
+
+                        // Flush remaining asr_buffer: pad final sub-chunk if needed
+                        if !asr_buffer.is_empty() && asr_buffer.len() < chunk_size {
+                            asr_buffer.resize(chunk_size, 0.0);
+                        }
+
+                        speech_start_uptime_ms = None;
+                        consecutive_empty = 0;
+                        model.reset();
+                    }
+                }
+            }
+
+            // Save leftover sub-frame samples for next iteration
+            if offset < vad_input.len() {
+                vad_leftover = vad_input[offset..].to_vec();
+            }
+
+            // --- ASR transcription (only runs when asr_buffer has data, i.e., during speech) ---
+            let vad_state_str = match vad.state() {
+                VadState::Silence => "silence",
+                VadState::Speech => "speech",
+            };
 
             while asr_buffer.len() >= chunk_size {
                 let chunk: Vec<f32> = asr_buffer.drain(..chunk_size).collect();
@@ -453,12 +561,17 @@ impl AudioEngine {
                             text.clone()
                         };
 
+                        if is_empty {
+                            consecutive_empty += 1;
+                        } else {
+                            consecutive_empty = 0;
+                        }
+
                         let _ = db.execute(
                             "INSERT INTO events (session_id, uptime_ms, event_type, chunk_num,
                              inference_ms, drain_samples, drain_audio_ms,
-                             resample_in, resample_out, resample_leftover,
-                             asr_buf_len, text_empty, text_preview)
-                             VALUES (?1, ?2, 'transcribe', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                             asr_buf_len, text_empty, text_preview, vad_state)
+                             VALUES (?1, ?2, 'transcribe', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                             rusqlite::params![
                                 session_id,
                                 loop_start.elapsed().as_millis() as i64,
@@ -466,12 +579,10 @@ impl AudioEngine {
                                 infer_ms,
                                 drain_count as i64,
                                 drain_audio_ms,
-                                resample_in as i64,
-                                resample_out as i64,
-                                resample_leftover as i64,
                                 asr_buffer.len() as i64,
                                 is_empty as i64,
                                 preview,
+                                vad_state_str,
                             ],
                         );
 
@@ -479,18 +590,33 @@ impl AudioEngine {
                             let _ = app_handle
                                 .emit("transcription", TranscriptionPayload { text });
                         }
+
+                        // Mid-speech reset heuristic
+                        if consecutive_empty >= EMPTY_RESET_THRESHOLD
+                            && vad.state() == VadState::Speech
+                        {
+                            let uptime = loop_start.elapsed().as_millis() as i64;
+                            let _ = db.execute(
+                                "INSERT INTO vad_events (session_id, uptime_ms, event_type, consecutive_empty)
+                                 VALUES (?1, ?2, 'mid_speech_reset', ?3)",
+                                rusqlite::params![session_id, uptime, consecutive_empty as i64],
+                            );
+                            model.reset();
+                            consecutive_empty = 0;
+                        }
                     }
                     Err(e) => {
                         let _ = db.execute(
                             "INSERT INTO events (session_id, uptime_ms, event_type, chunk_num,
-                             inference_ms, error_msg)
-                             VALUES (?1, ?2, 'asr_error', ?3, ?4, ?5)",
+                             inference_ms, error_msg, vad_state)
+                             VALUES (?1, ?2, 'asr_error', ?3, ?4, ?5, ?6)",
                             rusqlite::params![
                                 session_id,
                                 loop_start.elapsed().as_millis() as i64,
                                 chunk_num as i64,
                                 infer_start.elapsed().as_millis() as i64,
                                 e.to_string(),
+                                vad_state_str,
                             ],
                         );
                     }

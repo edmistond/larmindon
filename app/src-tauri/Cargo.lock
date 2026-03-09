@@ -2148,6 +2148,8 @@ name = "larmindon"
 version = "0.1.0"
 dependencies = [
  "cpal",
+ "ndarray",
+ "ort",
  "parakeet-rs",
  "rubato",
  "rusqlite",
