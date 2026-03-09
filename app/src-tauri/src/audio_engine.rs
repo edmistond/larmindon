@@ -21,7 +21,7 @@ const VAD_MODEL_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/models/silero
 const ASR_SAMPLE_RATE: usize = 16000;
 const VAD_FRAME_SIZE: usize = 512;
 const DEFAULT_CHUNK_MS: usize = 560;
-const EMPTY_RESET_THRESHOLD: u32 = 10;
+const EMPTY_RESET_THRESHOLD: u32 = 6;
 
 /// Convert a chunk duration in milliseconds to samples at 16kHz.
 /// Valid Nemotron chunk sizes: 80, 160, 560, 1120 ms.
