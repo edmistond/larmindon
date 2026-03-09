@@ -2,6 +2,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, SampleFormat, Stream, StreamConfig};
 use parakeet_rs::Nemotron;
 use rubato::{FftFixedIn, Resampler};
+use rusqlite::Connection;
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::path::Path;
@@ -9,6 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
+use std::time::Instant;
 use tauri::{AppHandle, Emitter};
 
 use crate::audio_config;
@@ -199,10 +201,11 @@ impl AudioEngine {
         let chunk_size = self.chunk_size;
 
         let processing_thread = thread::spawn(move || {
-            if let Err(e) =
-                Self::processing_loop(app_handle, buffer, stop_flag_thread, input_rate, needs_resample, chunk_size)
+            println!("[diag] Processing thread started");
+            match Self::processing_loop(app_handle, buffer, stop_flag_thread, input_rate, needs_resample, chunk_size)
             {
-                eprintln!("Processing loop error: {}", e);
+                Ok(()) => println!("[diag] Processing loop exited normally"),
+                Err(e) => eprintln!("[diag] Processing loop CRASHED: {}", e),
             }
         });
 
@@ -222,7 +225,10 @@ impl AudioEngine {
         // Drop the stream to stop audio capture
         self.stream.take();
         if let Some(handle) = self.processing_thread.take() {
-            let _ = handle.join();
+            match handle.join() {
+                Ok(()) => println!("[diag] Processing thread joined cleanly"),
+                Err(e) => eprintln!("[diag] Processing thread PANICKED: {:?}", e),
+            }
         }
     }
 
@@ -292,6 +298,45 @@ impl AudioEngine {
         Ok(stream)
     }
 
+    fn init_diag_db() -> Result<Connection, Box<dyn std::error::Error>> {
+        let db_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("larmindon_diag.sqlite");
+        println!("[diag] Diagnostics DB: {}", db_path.display());
+        let conn = Connection::open(&db_path)?;
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA synchronous=NORMAL;
+             CREATE TABLE IF NOT EXISTS sessions (
+                 id INTEGER PRIMARY KEY,
+                 started_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', 'localtime')),
+                 input_rate INTEGER,
+                 chunk_size INTEGER,
+                 needs_resample INTEGER
+             );
+             CREATE TABLE IF NOT EXISTS events (
+                 id INTEGER PRIMARY KEY,
+                 session_id INTEGER,
+                 ts TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', 'localtime')),
+                 uptime_ms INTEGER,
+                 event_type TEXT,
+                 chunk_num INTEGER,
+                 inference_ms INTEGER,
+                 drain_samples INTEGER,
+                 drain_audio_ms REAL,
+                 resample_in INTEGER,
+                 resample_out INTEGER,
+                 resample_leftover INTEGER,
+                 asr_buf_len INTEGER,
+                 text_empty INTEGER,
+                 text_preview TEXT,
+                 error_msg TEXT
+             );",
+        )?;
+        Ok(conn)
+    }
+
     fn processing_loop(
         app_handle: AppHandle,
         buffer: Arc<Mutex<VecDeque<f32>>>,
@@ -300,6 +345,14 @@ impl AudioEngine {
         needs_resample: bool,
         chunk_size: usize,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        let db = Self::init_diag_db()?;
+
+        db.execute(
+            "INSERT INTO sessions (input_rate, chunk_size, needs_resample) VALUES (?1, ?2, ?3)",
+            rusqlite::params![input_rate as i64, chunk_size as i64, needs_resample as i64],
+        )?;
+        let session_id = db.last_insert_rowid();
+
         println!("Loading Nemotron model from {}...", MODEL_PATH);
         let mut model = Nemotron::from_pretrained(Path::new(MODEL_PATH), None)?;
         println!("Model loaded.");
@@ -317,9 +370,16 @@ impl AudioEngine {
         };
 
         let mut asr_buffer: Vec<f32> = Vec::with_capacity(chunk_size * 2);
+        let loop_start = Instant::now();
+        let mut chunk_num: u64 = 0;
 
         loop {
             if stop_flag.load(Ordering::Relaxed) {
+                let _ = db.execute(
+                    "INSERT INTO events (session_id, uptime_ms, event_type, chunk_num)
+                     VALUES (?1, ?2, 'shutdown', ?3)",
+                    rusqlite::params![session_id, loop_start.elapsed().as_millis() as i64, chunk_num as i64],
+                );
                 break;
             }
 
@@ -333,52 +393,106 @@ impl AudioEngine {
                 continue;
             }
 
-            let samples_16k = if let Some(ref mut resampler) = resampler {
-                let chunk_size = resampler.input_frames_next();
-                let mut resampled = Vec::new();
-                let mut offset = 0;
+            let drain_count = drained.len();
+            let drain_audio_ms = drain_count as f64 / input_rate as f64 * 1000.0;
 
-                while offset + chunk_size <= drained.len() {
-                    let input_chunk = &drained[offset..offset + chunk_size];
-                    match resampler.process(&[input_chunk], None) {
-                        Ok(output) => {
-                            if !output.is_empty() {
-                                resampled.extend_from_slice(&output[0]);
+            let (samples_16k, resample_in, resample_out, resample_leftover) =
+                if let Some(ref mut resampler) = resampler {
+                    let rs_chunk = resampler.input_frames_next();
+                    let mut resampled = Vec::new();
+                    let mut offset = 0;
+
+                    while offset + rs_chunk <= drained.len() {
+                        let input_chunk = &drained[offset..offset + rs_chunk];
+                        match resampler.process(&[input_chunk], None) {
+                            Ok(output) => {
+                                if !output.is_empty() {
+                                    resampled.extend_from_slice(&output[0]);
+                                }
+                            }
+                            Err(e) => {
+                                let _ = db.execute(
+                                    "INSERT INTO events (session_id, uptime_ms, event_type, error_msg)
+                                     VALUES (?1, ?2, 'resample_error', ?3)",
+                                    rusqlite::params![session_id, loop_start.elapsed().as_millis() as i64, e.to_string()],
+                                );
                             }
                         }
-                        Err(e) => {
-                            eprintln!("Resampler error: {}", e);
+                        offset += rs_chunk;
+                    }
+
+                    let leftover = drained.len() - offset;
+                    if leftover > 0 {
+                        let mut guard = buffer.lock().unwrap();
+                        for &s in &drained[offset..] {
+                            guard.push_front(s);
                         }
                     }
-                    offset += chunk_size;
-                }
 
-                // Put leftover samples back
-                if offset < drained.len() {
-                    let mut guard = buffer.lock().unwrap();
-                    for &s in &drained[offset..] {
-                        guard.push_front(s);
-                    }
-                }
-
-                resampled
-            } else {
-                drained
-            };
+                    let rs_in = drain_count - leftover;
+                    let rs_out = resampled.len();
+                    (resampled, rs_in, rs_out, leftover)
+                } else {
+                    let len = drained.len();
+                    (drained, len, len, 0usize)
+                };
 
             asr_buffer.extend_from_slice(&samples_16k);
 
             while asr_buffer.len() >= chunk_size {
                 let chunk: Vec<f32> = asr_buffer.drain(..chunk_size).collect();
+                let infer_start = Instant::now();
                 match model.transcribe_chunk(&chunk) {
                     Ok(text) => {
-                        if !text.is_empty() {
+                        let infer_ms = infer_start.elapsed().as_millis() as i64;
+                        chunk_num += 1;
+                        let is_empty = text.is_empty();
+                        let preview = if text.len() > 200 {
+                            text[..200].to_string()
+                        } else {
+                            text.clone()
+                        };
+
+                        let _ = db.execute(
+                            "INSERT INTO events (session_id, uptime_ms, event_type, chunk_num,
+                             inference_ms, drain_samples, drain_audio_ms,
+                             resample_in, resample_out, resample_leftover,
+                             asr_buf_len, text_empty, text_preview)
+                             VALUES (?1, ?2, 'transcribe', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                            rusqlite::params![
+                                session_id,
+                                loop_start.elapsed().as_millis() as i64,
+                                chunk_num as i64,
+                                infer_ms,
+                                drain_count as i64,
+                                drain_audio_ms,
+                                resample_in as i64,
+                                resample_out as i64,
+                                resample_leftover as i64,
+                                asr_buffer.len() as i64,
+                                is_empty as i64,
+                                preview,
+                            ],
+                        );
+
+                        if !is_empty {
                             let _ = app_handle
                                 .emit("transcription", TranscriptionPayload { text });
                         }
                     }
                     Err(e) => {
-                        eprintln!("ASR error: {}", e);
+                        let _ = db.execute(
+                            "INSERT INTO events (session_id, uptime_ms, event_type, chunk_num,
+                             inference_ms, error_msg)
+                             VALUES (?1, ?2, 'asr_error', ?3, ?4, ?5)",
+                            rusqlite::params![
+                                session_id,
+                                loop_start.elapsed().as_millis() as i64,
+                                chunk_num as i64,
+                                infer_start.elapsed().as_millis() as i64,
+                                e.to_string(),
+                            ],
+                        );
                     }
                 }
             }

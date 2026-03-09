@@ -1,1 +1,4 @@
 .DS_Store
+larmindon_diag.sqlite
+larmindon_diag.sqlite-shm
+larmindon_diag.sqlite-wal
