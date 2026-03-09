@@ -8,7 +8,7 @@
 
 - **CPAL** — cross-platform audio I/O
 - **Rubato** — sample rate conversion
-- **pipewire-rs** — PipeWire integration (Linux)
+- **pipewire** — PipeWire integration (Linux) - https://crates.io/crates/pipewire
 
 ## Transcription
 

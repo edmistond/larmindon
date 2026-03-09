@@ -75,8 +75,6 @@ function App() {
 
   return (
     <main className="container">
-      <h1>Larmindon</h1>
-
       <div className="controls">
         <select
           value={selectedDevice}
