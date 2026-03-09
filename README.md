@@ -55,6 +55,10 @@ Nemotron supports chunk sizes of 80ms, 160ms, 560ms, and 1120ms. The default is 
 CHUNK_MS=160 npm run tauri dev
 ```
 
+### Mid-speech reset
+
+Nemotron's streaming decoder can occasionally get "stuck" and produce consecutive empty transcriptions even while speech is ongoing. As a workaround, the processing loop tracks consecutive empty results during VAD-detected speech. If the count reaches `EMPTY_RESET_THRESHOLD` (default: 6 chunks, ~3.4s at 560ms), the decoder state is reset and the event is logged to the diagnostics DB as a `mid_speech_reset`. This trades a brief interruption for faster recovery. The threshold is a constant in `audio_engine.rs`.
+
 ## Platform notes
 
 ### macOS
