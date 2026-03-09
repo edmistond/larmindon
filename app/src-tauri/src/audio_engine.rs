@@ -350,6 +350,9 @@ impl AudioEngine {
                  probability REAL
              );",
         )?;
+        // Migrate: add vad_state column if it doesn't exist (from pre-VAD schema).
+        // ALTER TABLE has no IF NOT EXISTS, so ignore the error if column already present.
+        let _ = conn.execute_batch("ALTER TABLE events ADD COLUMN vad_state TEXT;");
         Ok(conn)
     }
 
