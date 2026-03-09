@@ -1,7 +1,7 @@
 mod audio_config;
 mod audio_engine;
 
-use audio_engine::{AudioDevice, AudioEngine, Command};
+use audio_engine::{chunk_ms_to_samples, parse_chunk_ms, AudioDevice, AudioEngine, Command};
 use std::sync::mpsc;
 use std::sync::Mutex;
 use std::thread::{self, JoinHandle};
@@ -52,8 +52,12 @@ pub fn run() {
             let (cmd_tx, cmd_rx) = mpsc::channel();
             let app_handle = app.handle().clone();
 
+            let chunk_ms = parse_chunk_ms();
+            let chunk_size = chunk_ms_to_samples(chunk_ms);
+            println!("Nemotron chunk size: {}ms ({} samples)", chunk_ms, chunk_size);
+
             let engine_thread = thread::spawn(move || {
-                let engine = AudioEngine::new(app_handle, cmd_rx);
+                let engine = AudioEngine::new(app_handle, cmd_rx, chunk_size);
                 engine.run();
             });
 

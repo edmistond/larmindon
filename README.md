@@ -47,6 +47,14 @@ npm run tauri dev -- -- --features directml
 
 However, I've not seen it actually using the GPU in practice, unfortunately.
 
+### Chunk size
+
+Nemotron supports chunk sizes of 80ms, 160ms, 560ms, and 1120ms. The default is 560ms. Smaller chunks give lower latency; larger chunks provide more context per inference call but may struggle to keep up in real time. Set the `CHUNK_MS` environment variable to experiment:
+
+```sh
+CHUNK_MS=160 npm run tauri dev
+```
+
 ## Platform notes
 
 ### macOS

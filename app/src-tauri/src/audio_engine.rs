@@ -15,8 +15,39 @@ use crate::audio_config;
 
 const MODEL_PATH: &str = "/Users/edmistond/Downloads/prs-nemotron";
 const ASR_SAMPLE_RATE: usize = 16000;
-/// 560ms at 16kHz — required chunk size for Nemotron
-const NEMOTRON_CHUNK_SIZE: usize = 8960;
+const DEFAULT_CHUNK_MS: usize = 560;
+
+/// Convert a chunk duration in milliseconds to samples at 16kHz.
+/// Valid Nemotron chunk sizes: 80, 160, 560, 1120 ms.
+pub fn chunk_ms_to_samples(ms: usize) -> usize {
+    ASR_SAMPLE_RATE * ms / 1000
+}
+
+pub fn parse_chunk_ms() -> usize {
+    const VALID: &[usize] = &[80, 160, 560, 1120];
+    match std::env::var("CHUNK_MS") {
+        Ok(val) => match val.parse::<usize>() {
+            Ok(ms) if VALID.contains(&ms) => {
+                println!("Using CHUNK_MS={ms}ms from environment");
+                ms
+            }
+            Ok(ms) => {
+                eprintln!(
+                    "Invalid CHUNK_MS={ms}; must be one of {:?}. Falling back to {DEFAULT_CHUNK_MS}ms.",
+                    VALID
+                );
+                DEFAULT_CHUNK_MS
+            }
+            Err(_) => {
+                eprintln!(
+                    "Could not parse CHUNK_MS={val:?}. Falling back to {DEFAULT_CHUNK_MS}ms."
+                );
+                DEFAULT_CHUNK_MS
+            }
+        },
+        Err(_) => DEFAULT_CHUNK_MS,
+    }
+}
 
 #[derive(Serialize, Clone, Debug)]
 pub struct AudioDevice {
@@ -43,6 +74,7 @@ pub enum Command {
 pub struct AudioEngine {
     app_handle: AppHandle,
     cmd_rx: mpsc::Receiver<Command>,
+    chunk_size: usize,
     // Active session state
     stream: Option<Stream>,
     processing_thread: Option<JoinHandle<()>>,
@@ -50,10 +82,11 @@ pub struct AudioEngine {
 }
 
 impl AudioEngine {
-    pub fn new(app_handle: AppHandle, cmd_rx: mpsc::Receiver<Command>) -> Self {
+    pub fn new(app_handle: AppHandle, cmd_rx: mpsc::Receiver<Command>, chunk_size: usize) -> Self {
         Self {
             app_handle,
             cmd_rx,
+            chunk_size,
             stream: None,
             processing_thread: None,
             stop_flag: None,
@@ -163,10 +196,11 @@ impl AudioEngine {
         let stop_flag = Arc::new(AtomicBool::new(false));
         let stop_flag_thread = Arc::clone(&stop_flag);
         let app_handle = self.app_handle.clone();
+        let chunk_size = self.chunk_size;
 
         let processing_thread = thread::spawn(move || {
             if let Err(e) =
-                Self::processing_loop(app_handle, buffer, stop_flag_thread, input_rate, needs_resample)
+                Self::processing_loop(app_handle, buffer, stop_flag_thread, input_rate, needs_resample, chunk_size)
             {
                 eprintln!("Processing loop error: {}", e);
             }
@@ -264,6 +298,7 @@ impl AudioEngine {
         stop_flag: Arc<AtomicBool>,
         input_rate: usize,
         needs_resample: bool,
+        chunk_size: usize,
     ) -> Result<(), Box<dyn std::error::Error>> {
         println!("Loading Nemotron model from {}...", MODEL_PATH);
         let mut model = Nemotron::from_pretrained(Path::new(MODEL_PATH), None)?;
@@ -281,7 +316,7 @@ impl AudioEngine {
             None
         };
 
-        let mut asr_buffer: Vec<f32> = Vec::with_capacity(NEMOTRON_CHUNK_SIZE * 2);
+        let mut asr_buffer: Vec<f32> = Vec::with_capacity(chunk_size * 2);
 
         loop {
             if stop_flag.load(Ordering::Relaxed) {
@@ -333,8 +368,8 @@ impl AudioEngine {
 
             asr_buffer.extend_from_slice(&samples_16k);
 
-            while asr_buffer.len() >= NEMOTRON_CHUNK_SIZE {
-                let chunk: Vec<f32> = asr_buffer.drain(..NEMOTRON_CHUNK_SIZE).collect();
+            while asr_buffer.len() >= chunk_size {
+                let chunk: Vec<f32> = asr_buffer.drain(..chunk_size).collect();
                 match model.transcribe_chunk(&chunk) {
                     Ok(text) => {
                         if !text.is_empty() {
