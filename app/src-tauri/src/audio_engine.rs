@@ -350,9 +350,11 @@ impl AudioEngine {
                  probability REAL
              );",
         )?;
-        // Migrate: add vad_state column if it doesn't exist (from pre-VAD schema).
-        // ALTER TABLE has no IF NOT EXISTS, so ignore the error if column already present.
+        // Migrate: add columns if they don't exist (ALTER TABLE has no IF NOT EXISTS).
         let _ = conn.execute_batch("ALTER TABLE events ADD COLUMN vad_state TEXT;");
+        let _ = conn.execute_batch("ALTER TABLE events ADD COLUMN vad_ms INTEGER;");
+        let _ = conn.execute_batch("ALTER TABLE events ADD COLUMN resample_ms INTEGER;");
+        let _ = conn.execute_batch("ALTER TABLE events ADD COLUMN iteration_ms INTEGER;");
         Ok(conn)
     }
 
@@ -425,9 +427,11 @@ impl AudioEngine {
                 continue;
             }
 
+            let iter_start = Instant::now();
             let drain_count = drained.len();
             let drain_audio_ms = drain_count as f64 / input_rate as f64 * 1000.0;
 
+            let resample_start = Instant::now();
             let (samples_16k, _resample_in, _resample_out, _resample_leftover) =
                 if let Some(ref mut resampler) = resampler {
                     let rs_chunk = resampler.input_frames_next();
@@ -469,11 +473,14 @@ impl AudioEngine {
                     (drained, len, len, 0usize)
                 };
 
+            let resample_ms = resample_start.elapsed().as_millis() as i64;
+
             // --- VAD gating ---
             // Prepend any leftover from last iteration
             let mut vad_input = std::mem::take(&mut vad_leftover);
             vad_input.extend_from_slice(&samples_16k);
 
+            let vad_start = Instant::now();
             let mut offset = 0;
             while offset + VAD_FRAME_SIZE <= vad_input.len() {
                 let frame = &vad_input[offset..offset + VAD_FRAME_SIZE];
@@ -539,6 +546,8 @@ impl AudioEngine {
                 }
             }
 
+            let vad_ms = vad_start.elapsed().as_millis() as i64;
+
             // Save leftover sub-frame samples for next iteration
             if offset < vad_input.len() {
                 vad_leftover = vad_input[offset..].to_vec();
@@ -570,11 +579,13 @@ impl AudioEngine {
                             consecutive_empty = 0;
                         }
 
+                        let iteration_ms = iter_start.elapsed().as_millis() as i64;
                         let _ = db.execute(
                             "INSERT INTO events (session_id, uptime_ms, event_type, chunk_num,
                              inference_ms, drain_samples, drain_audio_ms,
-                             asr_buf_len, text_empty, text_preview, vad_state)
-                             VALUES (?1, ?2, 'transcribe', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                             asr_buf_len, text_empty, text_preview, vad_state,
+                             vad_ms, resample_ms, iteration_ms)
+                             VALUES (?1, ?2, 'transcribe', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                             rusqlite::params![
                                 session_id,
                                 loop_start.elapsed().as_millis() as i64,
@@ -586,6 +597,9 @@ impl AudioEngine {
                                 is_empty as i64,
                                 preview,
                                 vad_state_str,
+                                vad_ms,
+                                resample_ms,
+                                iteration_ms,
                             ],
                         );
 
