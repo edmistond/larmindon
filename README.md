@@ -55,6 +55,30 @@ Nemotron supports chunk sizes of 80ms, 160ms, 560ms, and 1120ms. The default is 
 CHUNK_MS=160 npm run tauri dev
 ```
 
+### Thread tuning
+
+By default, Nemotron's ONNX Runtime sessions use 2 intra-op threads and 1 inter-op thread. Intra-op threads control parallelism *within* individual operations (e.g., matrix multiplications), while inter-op threads control parallelism *between* independent graph nodes.
+
+Reducing intra-op threads lowers total CPU usage at the cost of slightly higher per-call inference latency. Since inference typically completes well within the chunk window (e.g., ~64ms for a 560ms chunk), there is significant headroom to trade threads for efficiency.
+
+```sh
+# Minimal CPU usage (single-threaded inference)
+INTRA_THREADS=1 npm run tauri dev
+
+# Default (balanced)
+INTRA_THREADS=2 npm run tauri dev
+
+# More parallelism (higher CPU, lower latency)
+INTRA_THREADS=4 npm run tauri dev
+
+# Both can be combined with chunk size
+CHUNK_MS=160 INTRA_THREADS=1 npm run tauri dev
+```
+
+| `INTRA_THREADS` | `INTER_THREADS` | Default |
+|-----------------|-----------------|---------|
+| 2               | 1               | Yes     |
+
 ### Mid-speech reset
 
 Nemotron's streaming decoder can occasionally get "stuck" and produce consecutive empty transcriptions even while speech is ongoing. As a workaround, the processing loop tracks consecutive empty results during VAD-detected speech. If the count reaches `EMPTY_RESET_THRESHOLD` (default: 6 chunks, ~3.4s at 560ms), the decoder state is reset and the event is logged to the diagnostics DB as a `mid_speech_reset`. This trades a brief interruption for faster recovery. The threshold is a constant in `audio_engine.rs`.
@@ -131,6 +155,30 @@ SELECT COUNT(*) AS total,
        ROUND(AVG(inference_ms), 1) AS avg_ms,
        MAX(inference_ms) AS max_ms,
        ROUND(SUM(text_empty) * 100.0 / COUNT(*), 1) AS empty_pct
+FROM events
+WHERE event_type = 'transcribe'
+  AND session_id = (SELECT MAX(id) FROM sessions);
+```
+
+**Performance breakdown (where CPU time goes):**
+```sql
+SELECT chunk_num, iteration_ms, inference_ms, vad_ms, resample_ms,
+       (inference_ms + vad_ms + resample_ms) AS accounted_ms
+FROM events
+WHERE event_type = 'transcribe'
+  AND session_id = (SELECT MAX(id) FROM sessions)
+ORDER BY chunk_num
+LIMIT 20;
+```
+
+**Estimated CPU usage from inference:**
+```sql
+SELECT COUNT(*) AS total_events,
+       ROUND(AVG(inference_ms), 1) AS avg_infer_ms,
+       ROUND(AVG(vad_ms), 1) AS avg_vad_ms,
+       ROUND(AVG(resample_ms), 1) AS avg_resample_ms,
+       ROUND(AVG(iteration_ms), 1) AS avg_iter_ms,
+       ROUND(CAST(SUM(inference_ms) AS REAL) / MAX(uptime_ms) * 100, 1) AS infer_cpu_pct
 FROM events
 WHERE event_type = 'transcribe'
   AND session_id = (SELECT MAX(id) FROM sessions);
