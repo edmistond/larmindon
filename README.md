@@ -12,6 +12,82 @@ Larmindon captures audio from an input device, resamples it to 16kHz, and feeds 
 
 The audio pipeline runs on a dedicated OS thread, communicating with the Tauri frontend via channels and events. This architecture is designed to accommodate future PipeWire integration on Linux.
 
+### Architecture
+
+```mermaid
+graph TB
+    subgraph Frontend ["Frontend (React)"]
+        UI["App.tsx<br/>Device selector, Start/Stop, transcript display"]
+    end
+
+    subgraph Tauri ["Main Thread (Tauri)"]
+        CMD["Command handlers<br/>list_devices / start / stop"]
+        STATE["Managed State<br/>AudioEngineHandle { cmd_tx }"]
+    end
+
+    subgraph Engine ["Engine Thread"]
+        LOOP["AudioEngine::run()<br/>Command dispatch loop"]
+    end
+
+    subgraph Session ["Session (per start_transcription)"]
+        subgraph CPAL ["CPAL Audio Callback Thread"]
+            CAPTURE["Audio capture<br/>Downmix to mono f32"]
+        end
+
+        BUFFER[("Shared buffer<br/>Arc&lt;Mutex&lt;VecDeque&lt;f32&gt;&gt;&gt;")]
+
+        subgraph Processing ["Processing Thread"]
+            DRAIN["Drain buffer"]
+            RESAMPLE{"Needs resample?"}
+            RUBATO["Resample to 16kHz<br/>(rubato FFT)"]
+            VAD["VAD gating<br/>Silero ONNX<br/>512-sample frames"]
+            RING["Pre-speech<br/>ring buffer<br/>(500ms)"]
+            ASR_BUF["ASR buffer<br/>Vec&lt;f32&gt;"]
+            ASR["Nemotron inference<br/>(parakeet-rs)<br/>configurable chunk size"]
+            RESET{"Decoder reset?"}
+        end
+    end
+
+    subgraph Diagnostics ["Diagnostics"]
+        DB[("SQLite<br/>larmindon_diag.sqlite<br/>sessions / events / vad_events")]
+    end
+
+    UI -- "invoke()" --> CMD
+    CMD -- "mpsc::Sender&lt;Command&gt;" --> LOOP
+    LOOP -- "start_session()" --> CAPTURE
+    CAPTURE -- "push_mono()" --> BUFFER
+    BUFFER --> DRAIN
+    DRAIN --> RESAMPLE
+    RESAMPLE -- "Yes" --> RUBATO --> VAD
+    RESAMPLE -- "No" --> VAD
+    VAD -- "Silence" --> RING
+    VAD -- "SpeechStarted" --> ASR_BUF
+    RING -- "pre_speech_samples" --> ASR_BUF
+    VAD -- "SpeechContinues" --> ASR_BUF
+    ASR_BUF -- "chunk_size samples" --> ASR
+    ASR -- "text" --> RESET
+    RESET -- "Sentence punctuation<br/>or 6 empty chunks<br/>or speech end" --> ASR
+    ASR -- "emit('transcription')" --> UI
+    ASR -- "log timing + text" --> DB
+    VAD -- "log state changes" --> DB
+
+    style Frontend fill:#e1f5fe
+    style Tauri fill:#fff3e0
+    style Engine fill:#fff3e0
+    style Session fill:#f3e5f5
+    style CPAL fill:#fce4ec
+    style Processing fill:#e8f5e9
+    style Diagnostics fill:#f5f5f5
+```
+
+#### Key data flows
+
+- **Commands** flow down: React `invoke()` → Tauri command handler → `mpsc` channel → Engine thread
+- **Events** flow up: Processing thread → `app_handle.emit()` → React event listener
+- **Audio** flows through a shared lock-free-ish buffer: CPAL callback pushes, processing thread drains
+- **Decoder resets** happen at three points: speech end (VAD), sentence punctuation (`. ? !`), or stuck-state heuristic (6 consecutive empty chunks)
+- **All threads are OS threads** — no async runtime (tokio, etc.)
+
 ## Prerequisites
 
 - [Nemotron streaming model files](https://huggingface.co/altunenes/parakeet-rs/tree/main/nemotron-speech-streaming-en-0.6b) downloaded locally
