@@ -24,6 +24,7 @@ const DEFAULT_CHUNK_MS: usize = 560;
 const DEFAULT_INTRA_THREADS: usize = 2;
 const DEFAULT_INTER_THREADS: usize = 1;
 const EMPTY_RESET_THRESHOLD: u32 = 6;
+const DEFAULT_PUNCTUATION_RESET: bool = true;
 
 /// Convert a chunk duration in milliseconds to samples at 16kHz.
 /// Valid Nemotron chunk sizes: 80, 160, 560, 1120 ms.
@@ -409,6 +410,7 @@ impl AudioEngine {
         let session_id = db.last_insert_rowid();
 
         let (intra_threads, inter_threads) = parse_thread_config();
+        let punctuation_reset_enabled = parse_punctuation_reset();
         println!(
             "Loading Nemotron model from {} (intra_threads={}, inter_threads={})...",
             MODEL_PATH, intra_threads, inter_threads
@@ -649,6 +651,21 @@ impl AudioEngine {
                                 .emit("transcription", TranscriptionPayload { text });
                         }
 
+                        // Punctuation-based decoder reset
+                        if punctuation_reset_enabled
+                            && !is_empty
+                            && ends_with_sentence_punctuation(&preview)
+                        {
+                            let uptime = loop_start.elapsed().as_millis() as i64;
+                            let _ = db.execute(
+                                "INSERT INTO vad_events (session_id, uptime_ms, event_type, consecutive_empty)
+                                 VALUES (?1, ?2, 'punctuation_reset', ?3)",
+                                rusqlite::params![session_id, uptime, consecutive_empty as i64],
+                            );
+                            model.reset();
+                            consecutive_empty = 0;
+                        }
+
                         // Mid-speech reset heuristic
                         if consecutive_empty >= EMPTY_RESET_THRESHOLD
                             && vad.state() == VadState::Speech
@@ -683,6 +700,49 @@ impl AudioEngine {
         }
 
         Ok(())
+    }
+}
+
+/// Check if text ends with sentence-ending punctuation (`.`, `?`, `!`),
+/// filtering out ellipsis and decimal-looking patterns.
+fn ends_with_sentence_punctuation(text: &str) -> bool {
+    let trimmed = text.trim_end();
+    if trimmed.is_empty() {
+        return false;
+    }
+    match trimmed.as_bytes()[trimmed.len() - 1] {
+        b'?' | b'!' => true,
+        b'.' => {
+            // Filter out ellipsis ("...")
+            if trimmed.ends_with("...") {
+                return false;
+            }
+            // Filter out decimal-looking patterns (digit before ".")
+            let before_dot = &trimmed[..trimmed.len() - 1];
+            let last_char = before_dot.trim_end().bytes().last();
+            !matches!(last_char, Some(b'0'..=b'9'))
+        }
+        _ => false,
+    }
+}
+
+fn parse_punctuation_reset() -> bool {
+    match std::env::var("PUNCTUATION_RESET") {
+        Ok(val) => match val.to_lowercase().as_str() {
+            "0" | "false" | "no" => {
+                println!("Punctuation-based decoder reset DISABLED via PUNCTUATION_RESET={val}");
+                false
+            }
+            "1" | "true" | "yes" => {
+                println!("Punctuation-based decoder reset ENABLED via PUNCTUATION_RESET={val}");
+                true
+            }
+            _ => {
+                eprintln!("Unknown PUNCTUATION_RESET={val:?}, using default (enabled)");
+                DEFAULT_PUNCTUATION_RESET
+            }
+        },
+        Err(_) => DEFAULT_PUNCTUATION_RESET,
     }
 }
 
