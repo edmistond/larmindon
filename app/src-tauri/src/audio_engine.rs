@@ -1,6 +1,6 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, SampleFormat, Stream, StreamConfig};
-use parakeet_rs::Nemotron;
+use parakeet_rs::{ExecutionConfig, Nemotron};
 use rubato::{FftFixedIn, Resampler};
 use rusqlite::Connection;
 use serde::Serialize;
@@ -21,6 +21,8 @@ const VAD_MODEL_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/models/silero
 const ASR_SAMPLE_RATE: usize = 16000;
 const VAD_FRAME_SIZE: usize = 512;
 const DEFAULT_CHUNK_MS: usize = 560;
+const DEFAULT_INTRA_THREADS: usize = 2;
+const DEFAULT_INTER_THREADS: usize = 1;
 const EMPTY_RESET_THRESHOLD: u32 = 6;
 
 /// Convert a chunk duration in milliseconds to samples at 16kHz.
@@ -53,6 +55,38 @@ pub fn parse_chunk_ms() -> usize {
         },
         Err(_) => DEFAULT_CHUNK_MS,
     }
+}
+
+pub fn parse_thread_config() -> (usize, usize) {
+    let intra = match std::env::var("INTRA_THREADS") {
+        Ok(val) => match val.parse::<usize>() {
+            Ok(n) if n >= 1 => {
+                println!("Using INTRA_THREADS={n} from environment");
+                n
+            }
+            _ => {
+                eprintln!("Invalid INTRA_THREADS={val:?}, falling back to {DEFAULT_INTRA_THREADS}");
+                DEFAULT_INTRA_THREADS
+            }
+        },
+        Err(_) => DEFAULT_INTRA_THREADS,
+    };
+
+    let inter = match std::env::var("INTER_THREADS") {
+        Ok(val) => match val.parse::<usize>() {
+            Ok(n) if n >= 1 => {
+                println!("Using INTER_THREADS={n} from environment");
+                n
+            }
+            _ => {
+                eprintln!("Invalid INTER_THREADS={val:?}, falling back to {DEFAULT_INTER_THREADS}");
+                DEFAULT_INTER_THREADS
+            }
+        },
+        Err(_) => DEFAULT_INTER_THREADS,
+    };
+
+    (intra, inter)
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -374,8 +408,15 @@ impl AudioEngine {
         )?;
         let session_id = db.last_insert_rowid();
 
-        println!("Loading Nemotron model from {}...", MODEL_PATH);
-        let mut model = Nemotron::from_pretrained(Path::new(MODEL_PATH), None)?;
+        let (intra_threads, inter_threads) = parse_thread_config();
+        println!(
+            "Loading Nemotron model from {} (intra_threads={}, inter_threads={})...",
+            MODEL_PATH, intra_threads, inter_threads
+        );
+        let model_config = ExecutionConfig::new()
+            .with_intra_threads(intra_threads)
+            .with_inter_threads(inter_threads);
+        let mut model = Nemotron::from_pretrained(Path::new(MODEL_PATH), Some(model_config))?;
         println!("Model loaded.");
 
         println!("Loading Silero VAD model from {}...", VAD_MODEL_PATH);
