@@ -1,0 +1,15 @@
+# VS 2026 ships MSVC libs under lib\onecore\x64 instead of lib\x64.
+# Rust's cc crate doesn't know about this layout yet, so we add
+# the library search paths explicitly via link args.
+# We also set INCLUDE and LIB so the cc crate can find headers and libs
+# when compiling C dependencies (e.g. onig_sys).
+[target.x86_64-pc-windows-msvc]
+rustflags = [
+    "-Lnative=C:\\Program Files\\Microsoft Visual Studio\\18\\Community\\VC\\Tools\\MSVC\\14.50.35717\\lib\\onecore\\x64",
+    "-Lnative=C:\\Program Files (x86)\\Windows Kits\\10\\Lib\\10.0.19041.0\\ucrt\\x64",
+    "-Lnative=C:\\Program Files (x86)\\Windows Kits\\10\\Lib\\10.0.19041.0\\um\\x64",
+]
+
+[env]
+INCLUDE = { value = "C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\BuildTools\\VC\\Tools\\MSVC\\14.29.30133\\include;C:\\Program Files (x86)\\Windows Kits\\10\\include\\10.0.19041.0\\ucrt;C:\\Program Files (x86)\\Windows Kits\\10\\include\\10.0.19041.0\\um;C:\\Program Files (x86)\\Windows Kits\\10\\include\\10.0.19041.0\\shared", force = true }
+LIB = { value = "C:\\Program Files\\Microsoft Visual Studio\\18\\Community\\VC\\Tools\\MSVC\\14.50.35717\\lib\\onecore\\x64;C:\\Program Files (x86)\\Windows Kits\\10\\Lib\\10.0.19041.0\\ucrt\\x64;C:\\Program Files (x86)\\Windows Kits\\10\\Lib\\10.0.19041.0\\um\\x64", force = true }
