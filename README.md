@@ -88,6 +88,10 @@ graph TB
 - **Decoder resets** happen at three points: speech end (VAD), sentence punctuation (`. ? !`), or stuck-state heuristic (6 consecutive empty chunks)
 - **All threads are OS threads** — no async runtime (tokio, etc.)
 
+#### Interactive visualization
+
+An animated browser-based visualization of the pipeline is available in [`visualization/`](visualization/index.html) — open `visualization/index.html` in any browser (no build step). It simulates audio data flowing through the shared buffer, resampler, VAD, ring buffer, and Nemotron inference stages with configurable scenarios (normal speech, silence, intermittent, stuck decoder).
+
 ## Prerequisites
 
 - [Nemotron streaming model files](https://huggingface.co/altunenes/parakeet-rs/tree/main/nemotron-speech-streaming-en-0.6b) downloaded locally
