@@ -16,7 +16,8 @@ use tauri::{AppHandle, Emitter};
 use crate::audio_config;
 use crate::vad::{VadDecision, VadProcessor, VadState};
 
-const MODEL_PATH: &str = "/Users/edmistond/Downloads/prs-nemotron";
+//const MODEL_PATH: &str = "/Users/edmistond/Downloads/prs-nemotron";
+const MODEL_PATH: &str = "f:\\prs-nemotron";
 const VAD_MODEL_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/models/silero_vad.onnx");
 const ASR_SAMPLE_RATE: usize = 16000;
 const VAD_FRAME_SIZE: usize = 512;
@@ -94,6 +95,7 @@ pub fn parse_thread_config() -> (usize, usize) {
 pub struct AudioDevice {
     pub id: String,
     pub name: String,
+    pub is_output: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -175,7 +177,7 @@ impl AudioEngine {
 
         if let Ok(input_devices) = host.input_devices() {
             for device in input_devices {
-                let name = device
+                let raw_name = device
                     .description()
                     .map(|desc| desc.name().to_string())
                     .unwrap_or_else(|_| "<unknown>".to_string());
@@ -184,7 +186,33 @@ impl AudioEngine {
                     .map(|id| id.to_string())
                     .unwrap_or_default();
                 if !id.is_empty() {
-                    devices.push(AudioDevice { id, name });
+                    devices.push(AudioDevice {
+                        id,
+                        name: format!("[in] {}", raw_name),
+                        is_output: false,
+                    });
+                }
+            }
+        }
+
+        // On Windows, WASAPI allows monitoring output devices as loopback inputs.
+        #[cfg(target_os = "windows")]
+        if let Ok(output_devices) = host.output_devices() {
+            for device in output_devices {
+                let raw_name = device
+                    .description()
+                    .map(|desc| desc.name().to_string())
+                    .unwrap_or_else(|_| "<unknown>".to_string());
+                let id = device
+                    .id()
+                    .map(|id| id.to_string())
+                    .unwrap_or_default();
+                if !id.is_empty() {
+                    devices.push(AudioDevice {
+                        id,
+                        name: format!("[out] {}", raw_name),
+                        is_output: true,
+                    });
                 }
             }
         }
@@ -199,12 +227,15 @@ impl AudioEngine {
         let host = cpal::default_host();
 
         let device = if let Some(ref id) = device_id {
+            let find_by_id = |d: &Device| {
+                d.id()
+                    .map(|did| did.to_string() == *id)
+                    .unwrap_or(false)
+            };
+
             host.input_devices()?
-                .find(|d| {
-                    d.id()
-                        .map(|did| did.to_string() == *id)
-                        .unwrap_or(false)
-                })
+                .find(find_by_id)
+                .or_else(|| host.output_devices().ok()?.find(find_by_id))
                 .ok_or_else(|| format!("No device found with ID: {}", id))?
         } else {
             host.default_input_device()
