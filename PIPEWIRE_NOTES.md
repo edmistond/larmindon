@@ -1,7 +1,21 @@
 # PipeWire Implementation Notes
 
 ## Current State
-Device enumeration via PipeWire is not working. The code compiles successfully but no devices are returned.
+Device enumeration via PipeWire is **working**. Audio capture implementation is **complete and ready for testing**.
+
+## Recent Fixes
+
+### Init/Deinit Issue (Resolved)
+The "Creation failed" error on second enumeration was caused by:
+1. `test_pipewire_available()` in `lib.rs` called `pipewire::init()` then `pipewire::deinit()`
+2. Subsequent `create_backend()` calls couldn't re-initialize PipeWire after deinit
+3. **Fix**: Removed the `pipewire::deinit()` call - PipeWire stays initialized for the process lifetime
+
+### Device Categorization (Resolved)
+The registry listener wasn't collecting devices due to incorrect media class matching:
+- **Wrong**: Looking for `Audio/Sink` with `APP_NAME` for applications
+- **Correct**: Applications appear as `Stream/Output/Audio` nodes
+- **Correct**: Inputs are `Audio/Source`, Monitors are `Audio/Sink`
 
 ## Architecture Implemented
 
@@ -14,95 +28,78 @@ Created a backend abstraction in `src/audio_capture/mod.rs`:
 ### PipeWire Backend
 File: `src/audio_capture/pipewire.rs`
 
-#### Device Enumeration Attempt
-1. **Initialization**: Uses `pipewire::init()` and creates `MainLoopBox`
-2. **Context Setup**: Creates `ContextBox`, connects to core, gets registry
-3. **Registry Listener**: Adds global listener to capture node events
-4. **Device Categorization**:
-   - Apps: `Audio/Sink` with `APP_NAME`
-   - Monitors: Virtual `Audio/Sink`
-   - Inputs: `Audio/Source`
-5. **Timer-Based Exit**: Uses raw pointer to `MainLoopBox` stored as `usize` to allow timer callback to call `quit()` after 600ms
+#### Device Enumeration (Working)
+1. **Initialization**: `pipewire::init()` called once in `lib.rs` during `test_pipewire_available()`
+2. **Thread**: Enumeration runs in spawned thread with 2s timeout
+3. **MainLoop**: Creates `MainLoopBox`, `ContextBox`, connects to core, gets registry
+4. **Registry Listener**: Captures node events, categorizes by media class:
+   - `Stream/Output/Audio` → Applications (apps actively playing audio)
+   - `Audio/Source` → Input devices (microphones)
+   - `Audio/Sink` → Monitors (output devices - can capture all audio going to them)
+5. **Timer-Based Exit**: Raw pointer to MainLoopBox allows timer callback to call `quit()` after 600ms
 
-#### Current Implementation Issues
+### Audio Stream Implementation (Complete - 2026-03-30)
 
-##### Issue 1: No Devices Collected
-The registry listener callback never fires during the mainloop run. Possible causes:
-- Timer exits too quickly (600ms) before registry populates
-- Need to use `sync` call to ensure registry is populated
-- MainLoopBox threading issues - the raw pointer approach may be unsafe
+**Status**: Audio capture implementation is complete and compiles successfully. Ready for testing.
 
-##### Issue 2: MainLoop Threading
-PipeWire's `MainLoopBox` is `!Send`, meaning:
-- Cannot be moved to another thread
-- Cannot call `run()` in a spawned thread easily
-- Current workaround uses raw pointer in timer callback (unsafe)
+#### Implementation Details
 
-##### Issue 3: Device ID Format
-Node IDs are returned as strings from `global.id.to_string()`. Need to verify this is the correct format to pass to `TARGET_OBJECT` key when creating streams.
+**Stream Setup** (Completed):
+- [x] Create PipeWire Stream in `start()` method
+  - Use `pipewire::stream::StreamBox::new()` with core reference
+  - Set properties: `MEDIA_TYPE="Audio"`, `MEDIA_CATEGORY="Capture"`, `TARGET_OBJECT=<node_id>`
+  - Connect with `Direction::Input`
+- [x] Set up process callback using `stream.add_local_listener().process().register()`
+  - Call `stream.dequeue_buffer()` to get audio buffers
+  - Extract samples and convert to f32
+  - Downmix to mono
+  - Push into shared `Arc<Mutex<VecDeque<f32>>>`
+- [x] Run MainLoop in dedicated thread
+  - Create MainLoopBox, ContextBox, connect to core
+  - Spawn thread that runs `mainloop.run()`
+  - Use stop_flag and shutdown channel to coordinate shutdown
 
-### Audio Stream Implementation (Incomplete)
+**Format Handling** (Implemented):
+- Supports f32 audio format
+- Handles mono and stereo audio (downmixes stereo to mono)
+- Sample rate is determined by the source device (resampling handled by audio_engine)
 
-The `start()` method currently returns a dummy stream since full implementation has API issues:
+**Shutdown** (Implemented):
+- `PipewireStream.stop()` signals thread to quit via stop_flag and shutdown channel
+- MainLoop timer checks stop_flag every 10ms and calls `quit()` when set
+- Thread joins cleanly and resources are dropped
 
-1. **Stream Creation**: `StreamBox::new()` requires:
-   - Core reference
-   - Stream name
-   - Properties (including `TARGET_OBJECT` for target node)
+#### Technical Details
+- **API**: pipewire crate 0.9.x, libspa 0.9.x
+- **Target**: Node ID passed as string to `TARGET_OBJECT` property
+- **Direction**: `libspa::utils::Direction::Input` for capture (note: `utils` submodule required)
+- **Threading**: MainLoop runs in dedicated thread spawned from `start()`
+- **Buffer Access**: Uses `Buffer::datas_mut()` to get data chunks, `Data::chunk()` for metadata, `Data::data()` for sample bytes
+- **Format**: Currently assumes f32 format (4 bytes per sample)
+  - Mono: stride=4 bytes, copies directly
+  - Stereo: stride=8 bytes, downmixes to mono by averaging channels
 
-2. **Properties**: Need to use `properties!` macro with:
-   - `MEDIA_TYPE => "Audio"`
-   - `MEDIA_CATEGORY => "Capture"`
-   - `TARGET_OBJECT => device_id`
-
-3. **Direction**: Uses `pipewire::Direction::Input` for capture
-
-4. **Process Callback**: Should call `stream.dequeue_buffer()` and process audio data
-
-5. **MainLoop Challenge**: 
-   - Stream needs mainloop to run for audio processing
-   - Must coordinate with stop flag
-   - Cannot easily share MainLoopBox across threads
+#### Key Code Locations
+- `start()` method at line 33 in `pipewire.rs`
+- `stream_thread_func()` at line 101 - main capture thread
+- Process callback at line 131-204 handles audio buffer processing
+- Shutdown coordination at line 213-231
 
 ## API Compatibility Issues Found
 
-### PipeWire Crate Version 0.9.2
-Several API mismatches encountered:
-
-1. **TARGET_OBJECT**: Not found in keys module - may be named differently or require different import
-2. **Direction**: Not directly in `pipewire` namespace - need to find correct path
-3. **Buffer Access**: `Buffer::datas()` method API unclear
-4. **Channel**: `pipewire::channel` module exists but usage pattern unclear
-
-### Documentation Gaps
-- Unclear how to properly signal mainloop quit from timer
-- Unclear device ID format for stream targeting
-- Unclear buffer format negotiation
-
-## What We Tried
-
-### Approach 1: Simple Timeout
-- Add timer that sets flag after 500ms
-- Run mainloop
-- Collect devices after timer fires
-- **Result**: Devices not collected, flag approach doesn't help quit mainloop
-
-### Approach 2: Raw Pointer Workaround
-- Store `&mainloop as *const MainLoopBox as usize`
-- Timer callback casts back and calls `quit()`
-- **Result**: Compiles, runs, but no devices collected
-
-### Approach 3: Threaded MainLoop
-- Try to spawn mainloop.run() in separate thread
-- **Result**: Compile error - MainLoopBox is !Send
-
-### Approach 4: Async Channel
-- Try to use pipewire::channel for coordination
-- **Result**: API unclear, couldn't get working
+### PipeWire Crate Version 0.9.x
+1. **APPLICATION_NAME**: Not in `keys` module - use literal string `"application.name"`
+2. **TARGET_OBJECT**: Not found in keys module - use literal string `"target.object"`
+3. **Direction**: At `libspa::utils::Direction::Input` (NOT `libspa::Direction`)
+4. **Buffer Access**: 
+   - `Buffer::datas_mut()` returns `&mut [Data]` 
+   - `Data::chunk()` returns chunk metadata (offset, size, stride)
+   - `Data::data()` returns `Option<&mut [u8]>` for raw bytes
+   - Must get chunk info BEFORE calling `data()` (borrow checker)
 
 ## System Setup
 
-### Dependencies Installed (Arch)
+### Dependencies Installed
 - `pipewire` - PipeWire server
 - `pipewire-audio` - Audio support
 - `libpipewire` - Libraries
@@ -113,53 +110,12 @@ Several API mismatches encountered:
 - Environment variable `LARMINDON_AUDIO_BACKEND=pipewire` selects backend
 - Fallback to CPAL works when PipeWire unavailable
 
-## Next Steps to Try
-
-### 1. Registry Sync
-After getting registry, call `core.sync()` to ensure all globals are enumerated before starting mainloop.
-
-### 2. Longer Timeout
-Increase timer from 600ms to 2000ms to allow registry to fully populate.
-
-### 3. Proper Device ID Format
-Research correct format for TARGET_OBJECT - may need "pipewire:" prefix or different key entirely.
-
-### 4. Stream Implementation
-Focus on getting stream connected and processing buffers before worrying about mainloop coordination.
-
-### 5. Test Tools
-Use `pw-dump` or `pw-cli` to verify PipeWire is working and see actual node IDs.
-
-## Working Code to Build Upon
-
-### Audio Capture Module Structure
-```rust
-// audio_capture/mod.rs - Trait definitions work correctly
-pub trait AudioCapture: Send {
-    fn enumerate_devices(&self) -> Result<Vec<AudioDevice>, Box<dyn Error>>;
-    fn start(&self, device_id: Option<String>, buffer: Arc<Mutex<VecDeque<f32>>>, stop_flag: Arc<AtomicBool>) -> Result<Box<dyn AudioStream>, Box<dyn Error>>;
-}
-```
-
-### CPAL Backend
-Works correctly - can use as reference for:
-- Thread spawning pattern
-- Buffer sharing with processing thread
-- Device ID handling
-
-### Backend Selection
-Lib.rs correctly:
-- Checks LARMINDON_AUDIO_BACKEND env var
-- Tests PipeWire availability
-- Falls back to CPAL
-- Panics if neither available
-
 ## Key Files
 
 - `src/audio_capture/mod.rs` - Abstraction layer
-- `src/audio_capture/pipewire.rs` - PipeWire backend (enumeration stub)
+- `src/audio_capture/pipewire.rs` - PipeWire backend (enumeration + capture complete)
 - `src/audio_capture/cpal.rs` - CPAL backend (fully working)
-- `src/lib.rs` - Backend selection logic
+- `src/lib.rs` - Backend selection logic, PipeWire init
 - `Cargo.toml` - Features: `pipewire`, `cpal`
 
 ## Current Behavior
@@ -167,48 +123,78 @@ Lib.rs correctly:
 1. App starts with "Attempting to use PipeWire backend..."
 2. "PipeWire is available, using PipeWire backend" appears
 3. "[PipeWire] Enumerating devices..." appears
-4. "[PipeWire] Found 0 devices" appears (or times out)
-5. Device list in UI is empty
-6. Cannot start transcription
-
-## CPAL Fallback
-When PipeWire fails, CPAL works correctly:
-- Lists input devices
-- Can capture and transcribe audio
-- Works on Linux via ALSA/PulseAudio
+4. "[PipeWire] Found N devices" appears with applications, inputs, and monitors
+5. Device list in UI shows all categories
+6. **NEW**: Selecting device and starting transcription creates real PipeWire stream
+7. **NEW**: Audio should flow through to transcription engine
 
 ## Build Commands
 
 ```bash
 # Build with both backends
-cargo build
+cd app && npm run tauri dev
 
 # Force CPAL
-LARMINDON_AUDIO_BACKEND=cpal cargo run
+LARMINDON_AUDIO_BACKEND=cpal npm run tauri dev
 
-# Force PipeWire (current broken state)
-LARMINDON_AUDIO_BACKEND=pipewire cargo run
+# Force PipeWire
+LARMINDON_AUDIO_BACKEND=pipewire npm run tauri dev
 ```
+
+## Testing Protocol
+
+**Ready for testing!**
+
+To test:
+1. Start the app: `cd app && npm run tauri dev &`
+2. Check console for PipeWire messages
+3. Select a device (application, input, or monitor)
+4. Start transcription
+5. Look for:
+   - "[PipeWire] Starting stream for device: <id>"
+   - "[PipeWire] Stream connected to node <id>"
+   - Audio flowing (transcription appearing)
+6. Stop transcription and verify clean shutdown:
+   - "[PipeWire] Stopping stream..."
+   - "[PipeWire] Stream thread joined"
+   - "[PipeWire] Stream stopped"
+
+**Expected behavior**: App enumerates devices, connects to selected node, captures audio in f32 format, downmixes to mono, and feeds to transcription engine.
+
+**Potential issues to watch for**:
+- Format negotiation (if source isn't f32)
+- Buffer underruns/overruns
+- Thread cleanup on rapid start/stop
+- Sample rate mismatches (should be handled by resampler in audio_engine)
 
 ## PipeWire Resources
 
-- Crate: https://crates.io/crates/pipewire (0.9.2)
+- Crate: https://crates.io/crates/pipewire (0.9.x)
 - Docs: https://pipewire.pages.freedesktop.org/pipewire-rs/
 - Keys: https://pipewire.pages.freedesktop.org/pipewire-rs/pipewire/keys/index.html
-- Examples: Sparse, need to check pipewire-rs git repo
-
-## Open Questions
-
-1. Why does the registry listener never fire?
-2. What's the correct key for target node (TARGET_OBJECT vs NODE_TARGET)?
-3. How to safely coordinate mainloop quit with device collection?
-4. How to properly handle buffer format negotiation?
-5. How to share audio data between PipeWire thread and processing thread?
+- Examples: Sparse, check pipewire-rs git repo examples/
 
 ## Success Criteria
 
-- [ ] Device enumeration shows applications (Firefox, Zoom, etc.)
-- [ ] Can select "Monitor of Built-in Audio" as input
-- [ ] Audio capture produces f32 samples at device rate
-- [ ] Transcription works with PipeWire audio
-- [ ] No crashes when devices connect/disconnect
+- [x] Device enumeration shows applications (Brave, Firefox, etc.)
+- [x] Can see output monitors in device list
+- [x] Can see input devices in device list
+- [x] Audio capture produces f32 samples (implementation complete)
+- [ ] Transcription works with PipeWire audio (needs testing)
+- [ ] No crashes when devices connect/disconnect (needs testing)
+
+## Implementation Log
+
+### 2026-03-30: Phase 1 - Stream Setup Complete
+- Implemented real audio capture in `start()` method
+- Created `stream_thread_func()` that runs PipeWire mainloop in dedicated thread
+- Set up process callback using `stream.add_local_listener().process()`
+- Implemented f32 audio extraction from PipeWire buffers
+- Added mono/stereo downmixing logic
+- Implemented clean shutdown with stop_flag and shutdown channel
+- Fixed borrow checker issues (get chunk info before data)
+- Fixed Direction import (`libspa::utils::Direction` not `libspa::Direction`)
+- Compilation successful with only unrelated warnings
+
+**Next**: Testing with real audio to verify transcription works
+

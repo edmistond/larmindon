@@ -1,7 +1,7 @@
 use crate::audio_capture::{AudioCapture, AudioDevice, AudioStream, DeviceType};
 use std::collections::VecDeque;
 use std::error::Error;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -33,15 +33,37 @@ impl AudioCapture for PipewireBackend {
     fn start(
         &self,
         device_id: Option<String>,
-        _buffer: Arc<Mutex<VecDeque<f32>>>,
-        _stop_flag: Arc<AtomicBool>,
+        buffer: Arc<Mutex<VecDeque<f32>>>,
+        stop_flag: Arc<AtomicBool>,
     ) -> Result<Box<dyn AudioStream>, Box<dyn Error>> {
         let device_id = device_id.ok_or("Device ID required for PipeWire")?;
-        println!("[PipeWire] Would start stream for device: {}", device_id);
-        println!("[PipeWire] Note: Audio capture not yet implemented, returning dummy stream");
+        println!("[PipeWire] Starting stream for device: {}", device_id);
 
-        // For now, return a dummy stream since the full implementation has API issues
-        Ok(Box::new(PipewireStream))
+        // Parse device ID as node ID
+        let target_node_id: u32 = device_id
+            .parse()
+            .map_err(|_| format!("Invalid device ID: {}", device_id))?;
+
+        // Create channel for stream thread communication
+        let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
+
+        // Spawn the stream thread
+        let buffer_clone = Arc::clone(&buffer);
+        let stop_flag_clone = Arc::clone(&stop_flag);
+
+        let stream_thread = thread::spawn(move || {
+            if let Err(e) =
+                stream_thread_func(target_node_id, buffer_clone, stop_flag_clone, shutdown_rx)
+            {
+                eprintln!("[PipeWire] Stream thread error: {}", e);
+            }
+        });
+
+        Ok(Box::new(PipewireStream {
+            stop_flag,
+            shutdown_tx,
+            thread: Some(stream_thread),
+        }))
     }
 
     fn name(&self) -> &'static str {
@@ -49,12 +71,190 @@ impl AudioCapture for PipewireBackend {
     }
 }
 
-struct PipewireStream;
+struct PipewireStream {
+    stop_flag: Arc<AtomicBool>,
+    shutdown_tx: mpsc::Sender<()>,
+    thread: Option<thread::JoinHandle<()>>,
+}
 
 impl AudioStream for PipewireStream {
-    fn stop(self: Box<Self>) {
+    fn stop(mut self: Box<Self>) {
+        println!("[PipeWire] Stopping stream...");
+
+        // Signal the thread to stop
+        self.stop_flag.store(true, Ordering::Relaxed);
+        let _ = self.shutdown_tx.send(());
+
+        // Wait for thread to finish
+        if let Some(thread) = self.thread.take() {
+            match thread.join() {
+                Ok(_) => println!("[PipeWire] Stream thread joined"),
+                Err(e) => eprintln!("[PipeWire] Stream thread panicked: {:?}", e),
+            }
+        }
+
         println!("[PipeWire] Stream stopped");
     }
+}
+
+fn stream_thread_func(
+    target_node_id: u32,
+    buffer: Arc<Mutex<VecDeque<f32>>>,
+    stop_flag: Arc<AtomicBool>,
+    shutdown_rx: mpsc::Receiver<()>,
+) -> Result<(), Box<dyn Error>> {
+    use libspa::utils::Direction;
+    use pipewire::main_loop::MainLoopBox;
+    use pipewire::properties::properties;
+    use pipewire::stream::{StreamBox, StreamFlags};
+
+    println!(
+        "[PipeWire] Stream thread starting for node {}",
+        target_node_id
+    );
+
+    // Create mainloop and context
+    let mainloop = MainLoopBox::new(None)?;
+    let context = pipewire::context::ContextBox::new(&mainloop.loop_(), None)?;
+    let core = context.connect(None)?;
+
+    // Create properties for the stream
+    let props = properties! {
+        *pipewire::keys::MEDIA_TYPE => "Audio",
+        *pipewire::keys::MEDIA_CATEGORY => "Capture",
+        "target.object" => target_node_id.to_string(),
+    };
+
+    // Create the stream
+    let stream = StreamBox::new(&core, "larmindon-capture", props)?;
+
+    // Set up process callback
+    let buffer_clone = Arc::clone(&buffer);
+    let stop_flag_clone = Arc::clone(&stop_flag);
+
+    let _listener = stream
+        .add_local_listener::<()>()
+        .process(move |stream, _user_data| {
+            if stop_flag_clone.load(Ordering::Relaxed) {
+                return;
+            }
+
+            // Dequeue buffer and process audio data
+            while let Some(mut pw_buffer) = stream.dequeue_buffer() {
+                let datas = pw_buffer.datas_mut();
+
+                for data in datas.iter_mut() {
+                    // Get chunk info first before borrowing data mutably
+                    let chunk = data.chunk();
+                    let offset = chunk.offset() as usize;
+                    let size = chunk.size() as usize;
+                    let stride = chunk.stride() as usize;
+
+                    if size == 0 || stride == 0 {
+                        continue;
+                    }
+
+                    // Now get the actual data
+                    if let Some(raw_data) = data.data() {
+                        // Extract audio samples from the buffer
+                        // Assuming f32 format for now (stride should be 4 for mono, 8 for stereo, etc.)
+                        let bytes_per_sample = 4; // f32
+
+                        // Process the data
+                        if stride == bytes_per_sample {
+                            // Mono f32 - copy directly
+                            let samples = &raw_data[offset..offset + size];
+                            let f32_samples: &[f32] = unsafe {
+                                std::slice::from_raw_parts(
+                                    samples.as_ptr() as *const f32,
+                                    samples.len() / 4,
+                                )
+                            };
+
+                            if let Ok(mut guard) = buffer_clone.lock() {
+                                guard.extend(f32_samples.iter());
+                            }
+                        } else if stride == bytes_per_sample * 2 {
+                            // Stereo f32 - downmix to mono
+                            let samples = &raw_data[offset..offset + size];
+                            let f32_samples: &[f32] = unsafe {
+                                std::slice::from_raw_parts(
+                                    samples.as_ptr() as *const f32,
+                                    samples.len() / 4,
+                                )
+                            };
+
+                            // Downmix stereo to mono
+                            let mono: Vec<f32> = f32_samples
+                                .chunks_exact(2)
+                                .map(|frame| (frame[0] + frame[1]) / 2.0)
+                                .collect();
+
+                            if let Ok(mut guard) = buffer_clone.lock() {
+                                guard.extend(mono.iter());
+                            }
+                        } else {
+                            // Other formats - log and skip for now
+                            println!(
+                                "[PipeWire] Unsupported format: stride={}, size={}",
+                                stride, size
+                            );
+                        }
+                    }
+                }
+
+                // Buffer is automatically returned when pw_buffer is dropped
+            }
+        })
+        .register()?;
+
+    // Connect the stream to capture from the target node
+    let direction = Direction::Input;
+    let mut params: Vec<&libspa::pod::Pod> = Vec::new();
+
+    stream.connect(
+        direction,
+        Some(target_node_id),
+        StreamFlags::empty(),
+        &mut params,
+    )?;
+
+    println!("[PipeWire] Stream connected to node {}", target_node_id);
+
+    // Run the mainloop with periodic stop checks
+    let mainloop_ptr = &mainloop as *const MainLoopBox as usize;
+
+    let check_timer = mainloop.loop_().add_timer(move |_| {
+        // Check if we should stop
+        if stop_flag.load(Ordering::Relaxed) {
+            unsafe {
+                let ml = &*(mainloop_ptr as *const MainLoopBox);
+                ml.quit();
+            }
+        }
+
+        // Also check shutdown channel
+        if shutdown_rx.try_recv().is_ok() {
+            unsafe {
+                let ml = &*(mainloop_ptr as *const MainLoopBox);
+                ml.quit();
+            }
+        }
+    });
+
+    // Update timer to run every 10ms
+    check_timer
+        .update_timer(
+            Some(Duration::from_millis(10)),
+            Some(Duration::from_millis(10)),
+        )
+        .into_result()?;
+
+    // Run the mainloop
+    mainloop.run();
+
+    println!("[PipeWire] Stream thread exiting");
+    Ok(())
 }
 
 fn enumerate_devices_thread() -> Result<Vec<AudioDevice>, String> {

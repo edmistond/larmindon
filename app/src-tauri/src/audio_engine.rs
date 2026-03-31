@@ -26,6 +26,16 @@ const DEFAULT_INTER_THREADS: usize = 1;
 const EMPTY_RESET_THRESHOLD: u32 = 6;
 const DEFAULT_PUNCTUATION_RESET: bool = true;
 
+/// Expand tilde (~) to home directory in a path
+fn expand_tilde(path: &str) -> std::path::PathBuf {
+    if path.starts_with("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            return std::path::PathBuf::from(home).join(&path[2..]);
+        }
+    }
+    std::path::PathBuf::from(path)
+}
+
 /// Convert a chunk duration in milliseconds to samples at 16kHz.
 /// Valid Nemotron chunk sizes: 80, 160, 560, 1120 ms.
 pub fn chunk_ms_to_samples(ms: usize) -> usize {
@@ -334,14 +344,17 @@ impl AudioEngine {
 
         let (intra_threads, inter_threads) = parse_thread_config();
         let punctuation_reset_enabled = parse_punctuation_reset();
+        let model_path = expand_tilde(MODEL_PATH);
         println!(
             "Loading Nemotron model from {} (intra_threads={}, inter_threads={})...",
-            MODEL_PATH, intra_threads, inter_threads
+            model_path.display(),
+            intra_threads,
+            inter_threads
         );
         let model_config = ExecutionConfig::new()
             .with_intra_threads(intra_threads)
             .with_inter_threads(inter_threads);
-        let mut model = Nemotron::from_pretrained(Path::new(MODEL_PATH), Some(model_config))?;
+        let mut model = Nemotron::from_pretrained(&model_path, Some(model_config))?;
         println!("Model loaded.");
 
         println!("Loading Silero VAD model from {}...", VAD_MODEL_PATH);
