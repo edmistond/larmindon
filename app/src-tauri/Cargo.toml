@@ -22,16 +22,22 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-cpal = "0.17"
+cpal = { version = "0.17", optional = true }
 rubato = "0.14"
 parakeet-rs = "0.3"
 rusqlite = { version = "0.31", features = ["bundled"] }
 ort = "2.0.0-rc.12"
 ndarray = "0.17"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+pipewire = { version = "0.9", optional = true }
+libspa = { version = "0.9", optional = true }
+
 [features]
-default = []
+default = ["cpal", "pipewire"]
 coreml = ["parakeet-rs/coreml"]
 directml = ["parakeet-rs/directml"]
 migraphx = ["parakeet-rs/migraphx"]
+pipewire = ["dep:pipewire", "dep:libspa"]
+cpal = ["dep:cpal"]
 

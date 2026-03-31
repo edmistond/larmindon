@@ -1,5 +1,3 @@
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{Device, SampleFormat, Stream, StreamConfig};
 use parakeet_rs::{ExecutionConfig, Nemotron};
 use rubato::{FftFixedIn, Resampler};
 use rusqlite::Connection;
@@ -13,6 +11,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Instant;
 use tauri::{AppHandle, Emitter};
 
+use crate::audio_capture::{self, AudioCapture, AudioDevice, AudioStream};
 use crate::audio_config;
 use crate::vad::{VadDecision, VadProcessor, VadState};
 
@@ -91,13 +90,6 @@ pub fn parse_thread_config() -> (usize, usize) {
     (intra, inter)
 }
 
-#[derive(Serialize, Clone, Debug)]
-pub struct AudioDevice {
-    pub id: String,
-    pub name: String,
-    pub is_output: bool,
-}
-
 #[derive(Serialize, Clone)]
 pub struct TranscriptionPayload {
     pub text: String,
@@ -118,19 +110,30 @@ pub struct AudioEngine {
     app_handle: AppHandle,
     cmd_rx: mpsc::Receiver<Command>,
     chunk_size: usize,
+    capture_backend: Box<dyn AudioCapture>,
     // Active session state
-    stream: Option<Stream>,
+    active_stream: Option<Box<dyn AudioStream>>,
     processing_thread: Option<JoinHandle<()>>,
     stop_flag: Option<Arc<AtomicBool>>,
 }
 
 impl AudioEngine {
-    pub fn new(app_handle: AppHandle, cmd_rx: mpsc::Receiver<Command>, chunk_size: usize) -> Self {
+    pub fn new(
+        app_handle: AppHandle,
+        cmd_rx: mpsc::Receiver<Command>,
+        chunk_size: usize,
+        capture_backend: Box<dyn AudioCapture>,
+    ) -> Self {
+        println!(
+            "AudioEngine initialized with {} backend",
+            capture_backend.name()
+        );
         Self {
             app_handle,
             cmd_rx,
             chunk_size,
-            stream: None,
+            capture_backend,
+            active_stream: None,
             processing_thread: None,
             stop_flag: None,
         }
@@ -145,7 +148,16 @@ impl AudioEngine {
 
             match cmd {
                 Command::ListDevices { reply } => {
-                    let devices = Self::enumerate_devices();
+                    let devices = match self.capture_backend.enumerate_devices() {
+                        Ok(devices) => {
+                            // Sort by priority: apps first, then inputs, then monitors
+                            audio_capture::sort_devices_by_priority(devices)
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to enumerate devices: {}", e);
+                            Vec::new()
+                        }
+                    };
                     let _ = reply.send(devices);
                 }
                 Command::Start { device_id } => {
@@ -171,117 +183,61 @@ impl AudioEngine {
         }
     }
 
-    fn enumerate_devices() -> Vec<AudioDevice> {
-        let host = cpal::default_host();
-        let mut devices = Vec::new();
-
-        if let Ok(input_devices) = host.input_devices() {
-            for device in input_devices {
-                let raw_name = device
-                    .description()
-                    .map(|desc| desc.name().to_string())
-                    .unwrap_or_else(|_| "<unknown>".to_string());
-                let id = device
-                    .id()
-                    .map(|id| id.to_string())
-                    .unwrap_or_default();
-                if !id.is_empty() {
-                    devices.push(AudioDevice {
-                        id,
-                        name: format!("[in] {}", raw_name),
-                        is_output: false,
-                    });
-                }
-            }
-        }
-
-        // On Windows, WASAPI allows monitoring output devices as loopback inputs.
-        #[cfg(target_os = "windows")]
-        if let Ok(output_devices) = host.output_devices() {
-            for device in output_devices {
-                let raw_name = device
-                    .description()
-                    .map(|desc| desc.name().to_string())
-                    .unwrap_or_else(|_| "<unknown>".to_string());
-                let id = device
-                    .id()
-                    .map(|id| id.to_string())
-                    .unwrap_or_default();
-                if !id.is_empty() {
-                    devices.push(AudioDevice {
-                        id,
-                        name: format!("[out] {}", raw_name),
-                        is_output: true,
-                    });
-                }
-            }
-        }
-
-        devices
-    }
-
     fn start_session(
         &mut self,
         device_id: Option<String>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let host = cpal::default_host();
-
-        let device = if let Some(ref id) = device_id {
-            let find_by_id = |d: &Device| {
-                d.id()
-                    .map(|did| did.to_string() == *id)
-                    .unwrap_or(false)
-            };
-
-            host.input_devices()?
-                .find(find_by_id)
-                .or_else(|| host.output_devices().ok()?.find(find_by_id))
-                .ok_or_else(|| format!("No device found with ID: {}", id))?
-        } else {
-            host.default_input_device()
-                .ok_or("No default input device found")?
+        // If no device specified, try to select default
+        let device_id = match device_id {
+            Some(id) => Some(id),
+            None => {
+                let devices = self.capture_backend.enumerate_devices()?;
+                audio_capture::select_default_device(&devices)
+            }
         };
 
-        let device_name = device
-            .description()
-            .map(|d| d.name().to_string())
-            .unwrap_or_else(|_| "<unknown>".to_string());
-        println!("Using device: {}", device_name);
-
-        let (supported_config, sample_format) = audio_config::select_input_config(&device)?;
-        let config: StreamConfig = supported_config.into();
-        let input_rate = u32::from(config.sample_rate) as usize;
-        let channels = config.channels as usize;
-        let needs_resample = input_rate != ASR_SAMPLE_RATE;
-
-        println!(
-            "Audio config: {} channels, {} Hz, {:?} (resample: {})",
-            channels, input_rate, sample_format, needs_resample
-        );
+        if device_id.is_none() {
+            return Err("No device available for capture".into());
+        }
 
         let buffer: Arc<Mutex<VecDeque<f32>>> = Arc::new(Mutex::new(VecDeque::new()));
-        let buffer_for_callback = Arc::clone(&buffer);
-
-        let stream =
-            Self::build_stream(&device, &config, sample_format, channels, buffer_for_callback)?;
-
         let stop_flag = Arc::new(AtomicBool::new(false));
         let stop_flag_thread = Arc::clone(&stop_flag);
         let app_handle = self.app_handle.clone();
         let chunk_size = self.chunk_size;
 
+        // Start the capture backend
+        let stream = self.capture_backend.start(
+            device_id.clone(),
+            Arc::clone(&buffer),
+            Arc::clone(&stop_flag),
+        )?;
+
+        // Assume 48kHz input for now (will need to make this dynamic)
+        let input_rate = 48000;
+        let needs_resample = input_rate != ASR_SAMPLE_RATE;
+
+        println!(
+            "Audio config: {} Hz (resample: {})",
+            input_rate, needs_resample
+        );
+
         let processing_thread = thread::spawn(move || {
             println!("[diag] Processing thread started");
-            match Self::processing_loop(app_handle, buffer, stop_flag_thread, input_rate, needs_resample, chunk_size)
-            {
+            match Self::processing_loop(
+                app_handle,
+                buffer,
+                stop_flag_thread,
+                input_rate,
+                needs_resample,
+                chunk_size,
+            ) {
                 Ok(()) => println!("[diag] Processing loop exited normally"),
                 Err(e) => eprintln!("[diag] Processing loop CRASHED: {}", e),
             }
         });
 
-        stream.play()?;
-
-        self.stream = Some(stream);
+        self.active_stream = Some(stream);
         self.processing_thread = Some(processing_thread);
         self.stop_flag = Some(stop_flag);
 
@@ -292,80 +248,16 @@ impl AudioEngine {
         if let Some(flag) = self.stop_flag.take() {
             flag.store(true, Ordering::Relaxed);
         }
-        // Drop the stream to stop audio capture
-        self.stream.take();
+        // Stop and drop the stream
+        if let Some(stream) = self.active_stream.take() {
+            stream.stop();
+        }
         if let Some(handle) = self.processing_thread.take() {
             match handle.join() {
                 Ok(()) => println!("[diag] Processing thread joined cleanly"),
                 Err(e) => eprintln!("[diag] Processing thread PANICKED: {:?}", e),
             }
         }
-    }
-
-    fn build_stream(
-        device: &Device,
-        config: &StreamConfig,
-        sample_format: SampleFormat,
-        channels: usize,
-        buffer: Arc<Mutex<VecDeque<f32>>>,
-    ) -> Result<Stream, Box<dyn std::error::Error>> {
-        let err_fn = |err| eprintln!("Stream error: {}", err);
-
-        let stream = match sample_format {
-            SampleFormat::F32 => {
-                let buf = Arc::clone(&buffer);
-                device.build_input_stream(
-                    config,
-                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                        push_mono(data, channels, &buf);
-                    },
-                    err_fn,
-                    None,
-                )?
-            }
-            SampleFormat::I16 => {
-                let buf = Arc::clone(&buffer);
-                device.build_input_stream(
-                    config,
-                    move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                        let floats: Vec<f32> =
-                            data.iter().map(|&s| s as f32 / 32768.0).collect();
-                        push_mono(&floats, channels, &buf);
-                    },
-                    err_fn,
-                    None,
-                )?
-            }
-            SampleFormat::U8 => {
-                let buf = Arc::clone(&buffer);
-                device.build_input_stream(
-                    config,
-                    move |data: &[u8], _: &cpal::InputCallbackInfo| {
-                        let floats: Vec<f32> =
-                            data.iter().map(|&s| (s as f32 - 128.0) / 128.0).collect();
-                        push_mono(&floats, channels, &buf);
-                    },
-                    err_fn,
-                    None,
-                )?
-            }
-            SampleFormat::I32 => {
-                let buf = Arc::clone(&buffer);
-                device.build_input_stream(
-                    config,
-                    move |data: &[i32], _: &cpal::InputCallbackInfo| {
-                        let floats: Vec<f32> =
-                            data.iter().map(|&s| s as f32 / 2147483648.0).collect();
-                        push_mono(&floats, channels, &buf);
-                    },
-                    err_fn,
-                    None,
-                )?
-            }
-            _ => return Err(format!("Unsupported sample format: {:?}", sample_format).into()),
-        };
-
-        Ok(stream)
     }
 
     fn init_diag_db() -> Result<Connection, Box<dyn std::error::Error>> {
@@ -455,10 +347,10 @@ impl AudioEngine {
         println!("Loading Silero VAD model from {}...", VAD_MODEL_PATH);
         let mut vad = VadProcessor::new(
             Path::new(VAD_MODEL_PATH),
-            0.5,   // threshold
-            500,   // min_silence_duration_ms
-            250,   // min_speech_duration_ms
-            500,   // pre_speech_ms (ring buffer = 500ms)
+            0.5, // threshold
+            500, // min_silence_duration_ms
+            250, // min_speech_duration_ms
+            500, // pre_speech_ms (ring buffer = 500ms)
         )?;
         println!("VAD model loaded.");
 
@@ -486,7 +378,11 @@ impl AudioEngine {
                 let _ = db.execute(
                     "INSERT INTO events (session_id, uptime_ms, event_type, chunk_num)
                      VALUES (?1, ?2, 'shutdown', ?3)",
-                    rusqlite::params![session_id, loop_start.elapsed().as_millis() as i64, chunk_num as i64],
+                    rusqlite::params![
+                        session_id,
+                        loop_start.elapsed().as_millis() as i64,
+                        chunk_num as i64
+                    ],
                 );
                 break;
             }
@@ -522,10 +418,14 @@ impl AudioEngine {
                             }
                             Err(e) => {
                                 let _ = db.execute(
-                                    "INSERT INTO events (session_id, uptime_ms, event_type, error_msg)
+                                "INSERT INTO events (session_id, uptime_ms, event_type, error_msg)
                                      VALUES (?1, ?2, 'resample_error', ?3)",
-                                    rusqlite::params![session_id, loop_start.elapsed().as_millis() as i64, e.to_string()],
-                                );
+                                rusqlite::params![
+                                    session_id,
+                                    loop_start.elapsed().as_millis() as i64,
+                                    e.to_string()
+                                ],
+                            );
                             }
                         }
                         offset += rs_chunk;
@@ -566,7 +466,11 @@ impl AudioEngine {
                         let _ = db.execute(
                             "INSERT INTO events (session_id, uptime_ms, event_type, error_msg)
                              VALUES (?1, ?2, 'vad_error', ?3)",
-                            rusqlite::params![session_id, loop_start.elapsed().as_millis() as i64, e.to_string()],
+                            rusqlite::params![
+                                session_id,
+                                loop_start.elapsed().as_millis() as i64,
+                                e.to_string()
+                            ],
                         );
                         continue;
                     }
@@ -678,8 +582,7 @@ impl AudioEngine {
                         );
 
                         if !is_empty {
-                            let _ = app_handle
-                                .emit("transcription", TranscriptionPayload { text });
+                            let _ = app_handle.emit("transcription", TranscriptionPayload { text });
                         }
 
                         // Punctuation-based decoder reset
@@ -774,20 +677,5 @@ fn parse_punctuation_reset() -> bool {
             }
         },
         Err(_) => DEFAULT_PUNCTUATION_RESET,
-    }
-}
-
-/// Downmix interleaved multi-channel audio to mono and push into the shared buffer.
-fn push_mono(data: &[f32], channels: usize, buffer: &Arc<Mutex<VecDeque<f32>>>) {
-    let mono: Vec<f32> = if channels == 1 {
-        data.to_vec()
-    } else {
-        data.chunks_exact(channels)
-            .map(|frame| frame.iter().sum::<f32>() / channels as f32)
-            .collect()
-    };
-
-    if let Ok(mut guard) = buffer.lock() {
-        guard.extend(mono.iter());
     }
 }

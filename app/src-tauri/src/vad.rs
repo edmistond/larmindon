@@ -70,8 +70,7 @@ impl SileroModel {
         };
         let (state_shape, state_data) = outputs[state_key].try_extract_tensor::<f32>()?;
         let shape_usize: Vec<usize> = state_shape.iter().map(|&d| d as usize).collect();
-        self.state =
-            ArrayD::<f32>::from_shape_vec(IxDyn(&shape_usize), state_data.to_vec())?;
+        self.state = ArrayD::<f32>::from_shape_vec(IxDyn(&shape_usize), state_data.to_vec())?;
 
         // Update context: last 64 samples of the input chunk
         let new_ctx: Vec<f32> = frame[VAD_CHUNK_SIZE - VAD_CONTEXT_SIZE..].to_vec();
@@ -160,9 +159,7 @@ pub enum VadDecision {
     /// Frame is silence; was buffered in ring buffer.
     Silence,
     /// Speech just started; ring buffer has been drained into `pre_speech_samples`.
-    SpeechStarted {
-        pre_speech_samples: Vec<f32>,
-    },
+    SpeechStarted { pre_speech_samples: Vec<f32> },
     /// Speech continues; frame should be appended to ASR buffer.
     SpeechContinues,
     /// Speech just ended; frame should be appended, then flush + reset.

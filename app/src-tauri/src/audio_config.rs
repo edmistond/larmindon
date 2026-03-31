@@ -1,9 +1,12 @@
+#[cfg(feature = "cpal")]
 use cpal::traits::DeviceTrait;
+#[cfg(feature = "cpal")]
 use cpal::{Device, SampleFormat, SupportedStreamConfig};
 
 const PREFERRED_RATES: [u32; 3] = [16000, 44100, 48000];
 const MAX_RATE: u32 = 48000;
 
+#[cfg(feature = "cpal")]
 pub fn select_input_config(
     device: &Device,
 ) -> Result<(SupportedStreamConfig, SampleFormat), Box<dyn std::error::Error>> {
@@ -37,4 +40,9 @@ pub fn select_input_config(
     let config = range.with_sample_rate(capped_rate);
     let fmt = config.sample_format();
     Ok((config, fmt))
+}
+
+#[cfg(not(feature = "cpal"))]
+pub fn select_input_config(_device: &()) -> Result<((), ()), Box<dyn std::error::Error>> {
+    Err("CPAL feature not enabled".into())
 }
