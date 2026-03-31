@@ -1,7 +1,13 @@
 # PipeWire Implementation Notes
 
 ## Current State
-Device enumeration via PipeWire is **working**. Audio capture implementation is **complete and ready for testing**.
+Device enumeration via PipeWire is **working**. Audio capture implementation is **complete but NOT working** - stream connects but process callback never fires.
+
+## Critical Finding
+**qpwgraph observation**: larmindon stream appears but cannot be connected to anything. This suggests:
+1. Stream is created successfully
+2. Stream does NOT expose input ports (no audio format negotiation)
+3. Process callback never fires because no audio is routed to the stream
 
 ## Recent Fixes
 
@@ -32,58 +38,47 @@ File: `src/audio_capture/pipewire.rs`
 1. **Initialization**: `pipewire::init()` called once in `lib.rs` during `test_pipewire_available()`
 2. **Thread**: Enumeration runs in spawned thread with 2s timeout
 3. **MainLoop**: Creates `MainLoopBox`, `ContextBox`, connects to core, gets registry
-4. **Registry Listener**: Captures node events, categorizes by media class:
-   - `Stream/Output/Audio` → Applications (apps actively playing audio)
-   - `Audio/Source` → Input devices (microphones)
-   - `Audio/Sink` → Monitors (output devices - can capture all audio going to them)
+4. **Registry Listener**: Captures node events, categorizes by media class
 5. **Timer-Based Exit**: Raw pointer to MainLoopBox allows timer callback to call `quit()` after 600ms
 
-### Audio Stream Implementation (Complete - 2026-03-30)
+### Audio Stream Implementation (NOT WORKING - 2026-03-30)
 
-**Status**: Audio capture implementation is complete and compiles successfully. Ready for testing.
+**Status**: Stream connects but process callback never fires. No audio captured.
 
-#### Implementation Details
+#### Current Implementation
 
-**Stream Setup** (Completed):
-- [x] Create PipeWire Stream in `start()` method
-  - Use `pipewire::stream::StreamBox::new()` with core reference
-  - Set properties: `MEDIA_TYPE="Audio"`, `MEDIA_CATEGORY="Capture"`, `TARGET_OBJECT=<node_id>`
-  - Connect with `Direction::Input`
-- [x] Set up process callback using `stream.add_local_listener().process().register()`
-  - Call `stream.dequeue_buffer()` to get audio buffers
-  - Extract samples and convert to f32
-  - Downmix to mono
-  - Push into shared `Arc<Mutex<VecDeque<f32>>>`
-- [x] Run MainLoop in dedicated thread
-  - Create MainLoopBox, ContextBox, connect to core
-  - Spawn thread that runs `mainloop.run()`
-  - Use stop_flag and shutdown channel to coordinate shutdown
+**Stream Setup**:
+- Creates PipeWire Stream with `StreamBox::new()`
+- Sets properties: `MEDIA_TYPE="Audio"`, `MEDIA_CATEGORY="Capture"`, `TARGET_OBJECT=<node_id>`
+- Registers single listener with `state_changed` and `process` callbacks
+- Connects with `Direction::Input` to target node
+- Calls `stream.set_active(true)`
+- Runs mainloop in dedicated thread
 
-**Format Handling** (Implemented):
-- Supports f32 audio format
-- Handles mono and stereo audio (downmixes stereo to mono)
-- Sample rate is determined by the source device (resampling handled by audio_engine)
+**Problem**: Process callback never invoked despite stream appearing in qpwgraph
 
-**Shutdown** (Implemented):
-- `PipewireStream.stop()` signals thread to quit via stop_flag and shutdown channel
-- MainLoop timer checks stop_flag every 10ms and calls `quit()` when set
-- Thread joins cleanly and resources are dropped
+**Root Cause Hypothesis**: 
+Stream appears in graph but has no ports because:
+1. No format parameters (SPA pods) passed to `stream.connect()`
+2. Stream doesn't negotiate audio format with source
+3. Source can't connect because stream doesn't advertise what format it accepts
 
 #### Technical Details
 - **API**: pipewire crate 0.9.x, libspa 0.9.x
 - **Target**: Node ID passed as string to `TARGET_OBJECT` property
-- **Direction**: `libspa::utils::Direction::Input` for capture (note: `utils` submodule required)
+- **Direction**: `libspa::utils::Direction::Input` for capture
 - **Threading**: MainLoop runs in dedicated thread spawned from `start()`
-- **Buffer Access**: Uses `Buffer::datas_mut()` to get data chunks, `Data::chunk()` for metadata, `Data::data()` for sample bytes
-- **Format**: Currently assumes f32 format (4 bytes per sample)
-  - Mono: stride=4 bytes, copies directly
-  - Stereo: stride=8 bytes, downmixes to mono by averaging channels
+- **Current params**: Empty Vec passed to `stream.connect()`
 
-#### Key Code Locations
-- `start()` method at line 33 in `pipewire.rs`
-- `stream_thread_func()` at line 101 - main capture thread
-- Process callback at line 131-204 handles audio buffer processing
-- Shutdown coordination at line 213-231
+#### Debugging Attempts
+
+1. **State monitoring**: Added `state_changed` callback - **no output seen**
+2. **Activation**: Added `stream.set_active(true)` - no change
+3. **Process diagnostics**: Added call counter and sample logging - **never prints**
+4. **Listener consolidation**: Combined state+process into single listener - **no change**
+5. **Buffer checks**: Added check for `dequeue_buffer()` returning None - **never reached**
+
+**Conclusion**: Process callback is never invoked, suggesting stream never reaches streaming state.
 
 ## API Compatibility Issues Found
 
@@ -91,11 +86,7 @@ File: `src/audio_capture/pipewire.rs`
 1. **APPLICATION_NAME**: Not in `keys` module - use literal string `"application.name"`
 2. **TARGET_OBJECT**: Not found in keys module - use literal string `"target.object"`
 3. **Direction**: At `libspa::utils::Direction::Input` (NOT `libspa::Direction`)
-4. **Buffer Access**: 
-   - `Buffer::datas_mut()` returns `&mut [Data]` 
-   - `Data::chunk()` returns chunk metadata (offset, size, stride)
-   - `Data::data()` returns `Option<&mut [u8]>` for raw bytes
-   - Must get chunk info BEFORE calling `data()` (borrow checker)
+4. **Multiple listeners**: Cannot register separate listeners - must chain callbacks in single listener
 
 ## System Setup
 
@@ -113,7 +104,7 @@ File: `src/audio_capture/pipewire.rs`
 ## Key Files
 
 - `src/audio_capture/mod.rs` - Abstraction layer
-- `src/audio_capture/pipewire.rs` - PipeWire backend (enumeration + capture complete)
+- `src/audio_capture/pipewire.rs` - PipeWire backend (enumeration working, capture broken)
 - `src/audio_capture/cpal.rs` - CPAL backend (fully working)
 - `src/lib.rs` - Backend selection logic, PipeWire init
 - `Cargo.toml` - Features: `pipewire`, `cpal`
@@ -125,8 +116,17 @@ File: `src/audio_capture/pipewire.rs`
 3. "[PipeWire] Enumerating devices..." appears
 4. "[PipeWire] Found N devices" appears with applications, inputs, and monitors
 5. Device list in UI shows all categories
-6. **NEW**: Selecting device and starting transcription creates real PipeWire stream
-7. **NEW**: Audio should flow through to transcription engine
+6. Select device, start transcription:
+   - `[PipeWire] Starting stream for device: <id>`
+   - `[PipeWire] Stream thread starting for node <id>`
+   - `[PipeWire] Stream connected to node <id>`
+   - `[PipeWire] Stream activated`
+   - **NO state change messages**
+   - **NO process callback output**
+   - **No audio captured**
+7. Stop transcription: clean shutdown messages appear
+
+**qpwgraph**: Stream node visible but has no input ports, cannot be connected
 
 ## Build Commands
 
@@ -141,31 +141,12 @@ LARMINDON_AUDIO_BACKEND=cpal npm run tauri dev
 LARMINDON_AUDIO_BACKEND=pipewire npm run tauri dev
 ```
 
-## Testing Protocol
+## Known Working Alternative
 
-**Ready for testing!**
-
-To test:
-1. Start the app: `cd app && npm run tauri dev &`
-2. Check console for PipeWire messages
-3. Select a device (application, input, or monitor)
-4. Start transcription
-5. Look for:
-   - "[PipeWire] Starting stream for device: <id>"
-   - "[PipeWire] Stream connected to node <id>"
-   - Audio flowing (transcription appearing)
-6. Stop transcription and verify clean shutdown:
-   - "[PipeWire] Stopping stream..."
-   - "[PipeWire] Stream thread joined"
-   - "[PipeWire] Stream stopped"
-
-**Expected behavior**: App enumerates devices, connects to selected node, captures audio in f32 format, downmixes to mono, and feeds to transcription engine.
-
-**Potential issues to watch for**:
-- Format negotiation (if source isn't f32)
-- Buffer underruns/overruns
-- Thread cleanup on rapid start/stop
-- Sample rate mismatches (should be handled by resampler in audio_engine)
+**CPAL backend works perfectly** - use as fallback while debugging PipeWire:
+```bash
+LARMINDON_AUDIO_BACKEND=cpal npm run tauri dev
+```
 
 ## PipeWire Resources
 
@@ -179,22 +160,44 @@ To test:
 - [x] Device enumeration shows applications (Brave, Firefox, etc.)
 - [x] Can see output monitors in device list
 - [x] Can see input devices in device list
-- [x] Audio capture produces f32 samples (implementation complete)
-- [ ] Transcription works with PipeWire audio (needs testing)
-- [ ] No crashes when devices connect/disconnect (needs testing)
+- [ ] Audio capture produces f32 samples (NOT WORKING - no callback firing)
+- [ ] Transcription works with PipeWire audio
+- [ ] No crashes when devices connect/disconnect
 
 ## Implementation Log
 
-### 2026-03-30: Phase 1 - Stream Setup Complete
+### 2026-03-30: Phase 1 - Stream Setup Complete, But Not Working
 - Implemented real audio capture in `start()` method
-- Created `stream_thread_func()` that runs PipeWire mainloop in dedicated thread
-- Set up process callback using `stream.add_local_listener().process()`
-- Implemented f32 audio extraction from PipeWire buffers
-- Added mono/stereo downmixing logic
-- Implemented clean shutdown with stop_flag and shutdown channel
-- Fixed borrow checker issues (get chunk info before data)
-- Fixed Direction import (`libspa::utils::Direction` not `libspa::Direction`)
-- Compilation successful with only unrelated warnings
+- Created `stream_thread_func()` with mainloop and stream
+- Set up single listener with state_changed + process callbacks
+- Stream connects and activates successfully
+- **Problem**: Process callback never fires
+- **qpwgraph**: Stream appears but has no input ports
+- **Root cause**: Likely missing format parameters (SPA pods) for port negotiation
 
-**Next**: Testing with real audio to verify transcription works
+**Next Steps**: Need to add SPA format parameters to `stream.connect()` call to expose audio ports
+
+## Potential Solutions to Try
+
+### Option 1: Add SPA Format Parameters
+Pass format description to `stream.connect()` to expose input ports:
+```rust
+// Need to create SPA pod describing desired format:
+// - Format: F32
+// - Channels: 1 (mono) or 2 (stereo)
+// - Sample rate: 48000 (or negotiate)
+// - Position: channel layout
+```
+
+### Option 2: Use Auto-Connect
+Instead of targeting specific node, let PipeWire auto-connect:
+```rust
+stream.connect(Direction::Input, None, flags, params)
+```
+
+### Option 3: Check Node Port Availability
+Verify target node actually has output ports before connecting.
+
+### Option 4: Monitor Link State
+Add param_changed callback to see if format negotiation happens.
 
