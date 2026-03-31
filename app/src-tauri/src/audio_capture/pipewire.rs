@@ -171,8 +171,6 @@ fn stream_thread_func(
     // Set up stream callbacks - MUST register all callbacks in ONE listener
     let buffer_clone = Arc::clone(&buffer);
     let stop_flag_clone = Arc::clone(&stop_flag);
-    let mut sample_count: usize = 0;
-    let mut last_log = std::time::Instant::now();
 
     let _listener = stream
         .add_local_listener::<()>()
@@ -197,7 +195,6 @@ fn stream_thread_func(
             };
 
             let datas = pw_buffer.datas_mut();
-            let mut total_samples_this_buffer = 0;
 
             for data in datas.iter_mut() {
                 let chunk = data.chunk();
@@ -221,7 +218,6 @@ fn stream_thread_func(
                                 samples.len() / 4,
                             )
                         };
-                        total_samples_this_buffer += f32_samples.len();
 
                         if let Ok(mut guard) = buffer_clone.lock() {
                             guard.extend(f32_samples.iter());
@@ -240,7 +236,6 @@ fn stream_thread_func(
                             .chunks_exact(2)
                             .map(|frame| (frame[0] + frame[1]) / 2.0)
                             .collect();
-                        total_samples_this_buffer += mono.len();
 
                         if let Ok(mut guard) = buffer_clone.lock() {
                             guard.extend(mono.iter());
@@ -254,17 +249,6 @@ fn stream_thread_func(
                 }
             }
 
-            sample_count += total_samples_this_buffer;
-            if last_log.elapsed().as_secs() >= 1 {
-                if sample_count > 0 {
-                    println!(
-                        "[PipeWire] Captured {} samples in last second",
-                        sample_count
-                    );
-                }
-                sample_count = 0;
-                last_log = std::time::Instant::now();
-            }
         })
         .register()?;
 
@@ -358,7 +342,12 @@ fn enumerate_devices_thread() -> Result<Vec<AudioDevice>, String> {
             .global(move |global| {
                 if let Some(props) = global.props.as_ref() {
                     let media_class = props.get(*MEDIA_CLASS);
-                    let node_id = global.id.to_string();
+                    // Use object.serial for device ID — target.object matches against serial,
+                    // not the registry global.id (they differ for app streams)
+                    let node_id = props
+                        .get("object.serial")
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| global.id.to_string());
 
                     match media_class {
                         Some("Stream/Output/Audio") => {
