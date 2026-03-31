@@ -128,83 +128,119 @@ fn stream_thread_func(
     // Create the stream
     let stream = StreamBox::new(&core, "larmindon-capture", props)?;
 
-    // Set up process callback
+    // Set up stream callbacks - MUST register all callbacks in ONE listener
     let buffer_clone = Arc::clone(&buffer);
     let stop_flag_clone = Arc::clone(&stop_flag);
+    let mut sample_count: usize = 0;
+    let mut last_log = std::time::Instant::now();
+    let mut process_call_count: usize = 0;
 
     let _listener = stream
         .add_local_listener::<()>()
+        .state_changed(|_stream, _user_data, old_state, new_state| {
+            println!(
+                "[PipeWire] Stream state changed: {:?} -> {:?}",
+                old_state, new_state
+            );
+        })
         .process(move |stream, _user_data| {
+            process_call_count += 1;
+
             if stop_flag_clone.load(Ordering::Relaxed) {
                 return;
             }
 
-            // Dequeue buffer and process audio data
-            while let Some(mut pw_buffer) = stream.dequeue_buffer() {
-                let datas = pw_buffer.datas_mut();
+            // Try to dequeue buffer
+            let buffer_result = stream.dequeue_buffer();
+            if buffer_result.is_none() {
+                // No buffer available - this is normal, just return
+                return;
+            }
 
-                for data in datas.iter_mut() {
-                    // Get chunk info first before borrowing data mutably
-                    let chunk = data.chunk();
-                    let offset = chunk.offset() as usize;
-                    let size = chunk.size() as usize;
-                    let stride = chunk.stride() as usize;
+            let mut pw_buffer = buffer_result.unwrap();
+            let datas = pw_buffer.datas_mut();
+            let mut total_samples_this_buffer = 0;
 
-                    if size == 0 || stride == 0 {
-                        continue;
-                    }
+            for data in datas.iter_mut() {
+                // Get chunk info first before borrowing data mutably
+                let chunk = data.chunk();
+                let offset = chunk.offset() as usize;
+                let size = chunk.size() as usize;
+                let stride = chunk.stride() as usize;
 
-                    // Now get the actual data
-                    if let Some(raw_data) = data.data() {
-                        // Extract audio samples from the buffer
-                        // Assuming f32 format for now (stride should be 4 for mono, 8 for stereo, etc.)
-                        let bytes_per_sample = 4; // f32
-
-                        // Process the data
-                        if stride == bytes_per_sample {
-                            // Mono f32 - copy directly
-                            let samples = &raw_data[offset..offset + size];
-                            let f32_samples: &[f32] = unsafe {
-                                std::slice::from_raw_parts(
-                                    samples.as_ptr() as *const f32,
-                                    samples.len() / 4,
-                                )
-                            };
-
-                            if let Ok(mut guard) = buffer_clone.lock() {
-                                guard.extend(f32_samples.iter());
-                            }
-                        } else if stride == bytes_per_sample * 2 {
-                            // Stereo f32 - downmix to mono
-                            let samples = &raw_data[offset..offset + size];
-                            let f32_samples: &[f32] = unsafe {
-                                std::slice::from_raw_parts(
-                                    samples.as_ptr() as *const f32,
-                                    samples.len() / 4,
-                                )
-                            };
-
-                            // Downmix stereo to mono
-                            let mono: Vec<f32> = f32_samples
-                                .chunks_exact(2)
-                                .map(|frame| (frame[0] + frame[1]) / 2.0)
-                                .collect();
-
-                            if let Ok(mut guard) = buffer_clone.lock() {
-                                guard.extend(mono.iter());
-                            }
-                        } else {
-                            // Other formats - log and skip for now
-                            println!(
-                                "[PipeWire] Unsupported format: stride={}, size={}",
-                                stride, size
-                            );
-                        }
-                    }
+                if size == 0 || stride == 0 {
+                    continue;
                 }
 
-                // Buffer is automatically returned when pw_buffer is dropped
+                // Now get the actual data
+                if let Some(raw_data) = data.data() {
+                    // Extract audio samples from the buffer
+                    // Assuming f32 format for now (stride should be 4 for mono, 8 for stereo, etc.)
+                    let bytes_per_sample = 4; // f32
+
+                    // Process the data
+                    if stride == bytes_per_sample {
+                        // Mono f32 - copy directly
+                        let samples = &raw_data[offset..offset + size];
+                        let f32_samples: &[f32] = unsafe {
+                            std::slice::from_raw_parts(
+                                samples.as_ptr() as *const f32,
+                                samples.len() / 4,
+                            )
+                        };
+                        total_samples_this_buffer += f32_samples.len();
+
+                        if let Ok(mut guard) = buffer_clone.lock() {
+                            guard.extend(f32_samples.iter());
+                        }
+                    } else if stride == bytes_per_sample * 2 {
+                        // Stereo f32 - downmix to mono
+                        let samples = &raw_data[offset..offset + size];
+                        let f32_samples: &[f32] = unsafe {
+                            std::slice::from_raw_parts(
+                                samples.as_ptr() as *const f32,
+                                samples.len() / 4,
+                            )
+                        };
+
+                        // Downmix stereo to mono
+                        let mono: Vec<f32> = f32_samples
+                            .chunks_exact(2)
+                            .map(|frame| (frame[0] + frame[1]) / 2.0)
+                            .collect();
+                        total_samples_this_buffer += mono.len();
+
+                        if let Ok(mut guard) = buffer_clone.lock() {
+                            guard.extend(mono.iter());
+                        }
+                    } else {
+                        // Other formats - log and skip for now
+                        println!(
+                            "[PipeWire] Unsupported format: stride={}, size={}",
+                            stride, size
+                        );
+                    }
+                }
             }
+
+            // Log progress every second
+            sample_count += total_samples_this_buffer;
+            if last_log.elapsed().as_secs() >= 1 {
+                if sample_count > 0 {
+                    println!(
+                        "[PipeWire] Captured {} samples in last second",
+                        sample_count
+                    );
+                } else {
+                    println!(
+                        "[PipeWire] No audio data in last second (buffers received but empty)"
+                    );
+                }
+                sample_count = 0;
+                last_log = std::time::Instant::now();
+            }
+
+            // Buffer is automatically returned when pw_buffer is dropped
         })
         .register()?;
 
@@ -220,6 +256,14 @@ fn stream_thread_func(
     )?;
 
     println!("[PipeWire] Stream connected to node {}", target_node_id);
+
+    // Activate the stream
+    stream.set_active(true)?;
+    println!("[PipeWire] Stream activated");
+
+    // Check stream state
+    let state = stream.state();
+    println!("[PipeWire] Stream state: {:?}", state);
 
     // Run the mainloop with periodic stop checks
     let mainloop_ptr = &mainloop as *const MainLoopBox as usize;
