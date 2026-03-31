@@ -9,6 +9,11 @@ interface AudioDevice {
   name: string;
 }
 
+interface FontSettings {
+  font_family: string;
+  font_size_px: number;
+}
+
 function App() {
   const [devices, setDevices] = useState<AudioDevice[]>([]);
   const [selectedDevice, setSelectedDevice] = useState<string>("");
@@ -16,6 +21,10 @@ function App() {
   const [transcript, setTranscript] = useState("");
   const [error, setError] = useState("");
   const transcriptRef = useRef<HTMLDivElement>(null);
+  const [fontSettings, setFontSettings] = useState<FontSettings>({
+    font_family: "",
+    font_size_px: 0,
+  });
 
   async function refreshDevices() {
     const devs = await invoke<AudioDevice[]>("list_devices");
@@ -50,6 +59,23 @@ function App() {
     return () => {
       unlistenTranscription.then((fn) => fn());
       unlistenError.then((fn) => fn());
+    };
+  }, []);
+
+  useEffect(() => {
+    invoke<FontSettings>("get_settings").then((s) =>
+      setFontSettings({ font_family: s.font_family, font_size_px: s.font_size_px }),
+    );
+
+    const unlistenSettings = listen<FontSettings>("settings-changed", (event) => {
+      setFontSettings({
+        font_family: event.payload.font_family,
+        font_size_px: event.payload.font_size_px,
+      });
+    });
+
+    return () => {
+      unlistenSettings.then((fn) => fn());
     };
   }, []);
 
@@ -157,7 +183,14 @@ function App() {
 
       {error && <p className="error">{error}</p>}
 
-      <div className="transcript" ref={transcriptRef}>
+      <div
+        className="transcript"
+        ref={transcriptRef}
+        style={{
+          ...(fontSettings.font_family ? { fontFamily: fontSettings.font_family } : {}),
+          ...(fontSettings.font_size_px > 0 ? { fontSize: `${fontSettings.font_size_px}px` } : {}),
+        }}
+      >
         {transcript || (
           <span className="placeholder">
             {isRunning

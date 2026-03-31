@@ -4,6 +4,7 @@ use std::path::PathBuf;
 const VALID_CHUNK_MS: &[usize] = &[80, 160, 560, 1120];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Settings {
     pub model_path: String,
     pub chunk_ms: usize,
@@ -11,6 +12,10 @@ pub struct Settings {
     pub inter_threads: usize,
     pub punctuation_reset: bool,
     pub empty_reset_threshold: u32,
+    /// Font family for transcript display. Empty string = use default.
+    pub font_family: String,
+    /// Font size in px for transcript display. 0 = use default.
+    pub font_size_px: u32,
 }
 
 impl Default for Settings {
@@ -22,6 +27,8 @@ impl Default for Settings {
             inter_threads: 1,
             punctuation_reset: true,
             empty_reset_threshold: 6,
+            font_family: String::new(),
+            font_size_px: 0,
         }
     }
 }

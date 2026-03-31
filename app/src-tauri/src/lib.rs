@@ -10,7 +10,7 @@ use settings::Settings;
 use std::sync::mpsc;
 use std::sync::Mutex;
 use std::thread::{self, JoinHandle};
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 struct AudioEngineHandle {
     cmd_tx: mpsc::Sender<Command>,
@@ -58,10 +58,12 @@ fn get_settings(current_settings: State<'_, Mutex<Settings>>) -> Result<Settings
 fn save_settings(
     new_settings: Settings,
     current_settings: State<'_, Mutex<Settings>>,
+    app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     new_settings.save()?;
     let mut settings = current_settings.lock().map_err(|e| e.to_string())?;
-    *settings = new_settings;
+    *settings = new_settings.clone();
+    let _ = app_handle.emit("settings-changed", new_settings);
     Ok(())
 }
 

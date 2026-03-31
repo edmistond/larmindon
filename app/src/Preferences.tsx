@@ -11,6 +11,8 @@ interface Settings {
   inter_threads: number;
   punctuation_reset: boolean;
   empty_reset_threshold: number;
+  font_family: string;
+  font_size_px: number;
 }
 
 const VALID_CHUNK_MS = [80, 160, 560, 1120];
@@ -174,9 +176,36 @@ function Preferences() {
             className="prefs-input prefs-input-narrow"
           />
         </label>
+        <label className="prefs-label">
+          Transcript Font
+          <input
+            type="text"
+            value={settings.font_family}
+            onChange={(e) => update("font_family", e.target.value)}
+            placeholder="Default system font"
+            className="prefs-input"
+          />
+        </label>
+
+        <label className="prefs-label">
+          Transcript Font Size (px)
+          <input
+            type="number"
+            min={0}
+            max={72}
+            value={settings.font_size_px}
+            onChange={(e) =>
+              update("font_size_px", Math.max(0, Number(e.target.value)))
+            }
+            placeholder="0 = default"
+            className="prefs-input prefs-input-narrow"
+          />
+        </label>
       </div>
 
-      <p className="prefs-note">Changes take effect on next Start.</p>
+      <p className="prefs-note">
+        Engine settings take effect on next Start. Font changes apply on save.
+      </p>
 
       {error && <p className="prefs-error">{error}</p>}
       {saved && <p className="prefs-saved">Settings saved.</p>}
