@@ -169,9 +169,30 @@ Nemotron's streaming decoder can occasionally get "stuck" and produce consecutiv
 
 macOS does not natively provide audio loopback devices. To capture system audio (e.g. from a browser or media player), you need third-party software such as [BlackHole](https://existential.audio/blackhole/) or [Loopback](https://rogueamoeba.com/loopback/) to create a virtual audio input device. Select the loopback device from the dropdown in Larmindon.
 
-### Linux & Windows
+### Linux
 
-Not yet tested. Linux support will eventually use PipeWire for audio capture. Windows WASAPI loopback support is present in the underlying CPAL code but has not been verified.
+Linux uses PipeWire for audio capture, supporting per-application capture, input devices, and sink monitors. The app can also fall back to CPAL if PipeWire is unavailable (`LARMINDON_AUDIO_BACKEND=cpal`).
+
+#### Packaging an AppImage
+
+`npm run tauri build` assembles an `AppDir` but the final AppImage bundling step requires FUSE, which isn't available in containers (e.g. distrobox). To package manually:
+
+```bash
+# Download appimagetool (one-time)
+wget https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+chmod +x appimagetool-x86_64.AppImage
+
+# Package the AppDir (--appimage-extract-and-run avoids the FUSE requirement)
+ARCH=x86_64 ./appimagetool-x86_64.AppImage --appimage-extract-and-run \
+  app/src-tauri/target/release/bundle/appimage/larmindon.AppDir \
+  larmindon-x86_64.AppImage
+```
+
+**glibc compatibility:** The AppImage will require the same glibc version as the build environment. Building on Arch Linux (bleeding edge glibc) produces AppImages that won't run on older hosts. For portable AppImages, build on an older distro (e.g. Ubuntu 22.04). For active development, running directly inside the distrobox is easiest.
+
+### Windows
+
+Windows WASAPI loopback support is present in the underlying CPAL code but has not been verified.
 
 ## Debugging / Diagnostics
 
@@ -303,3 +324,52 @@ ORDER BY gap_ms DESC;
 ## Tech Stack
 
 See [STACK.md](STACK.md) for the full list of technologies used.
+
+## Arch Linux Setup
+
+When setting up this project on a fresh Arch Linux system, the following packages must be installed:
+
+### System Dependencies
+
+```bash
+sudo pacman -S --needed \
+  webkit2gtk-4.1 \
+  base-devel \
+  curl \
+  wget \
+  file \
+  openssl \
+  appmenu-gtk-module \
+  gtk3 \
+  libappindicator-gtk3 \
+  librsvg \
+  libsoup3 \
+  git \
+  protobuf \
+  nodejs \
+  npm \
+  alsa-lib \
+  pipewire \
+  pipewire-audio \
+  clang \
+  xdg-utils
+```
+
+**Note on PipeWire:** PipeWire is now the default audio backend on Linux. The `pipewire` and `pipewire-audio` packages provide the server and audio support. `clang` is required for building the PipeWire Rust bindings (via bindgen).
+
+### Rust
+
+Install via rustup:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source $HOME/.cargo/env
+```
+
+### Building
+
+```bash
+cd app
+npm install
+npm run tauri dev
+```
