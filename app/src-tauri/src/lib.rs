@@ -113,19 +113,14 @@ fn create_audio_backend() -> Box<dyn audio_capture::AudioCapture> {
 fn test_pipewire_available() -> Result<bool, Box<dyn std::error::Error>> {
     use pipewire::main_loop::MainLoopBox;
 
-    // Try to initialize PipeWire and create a context
     pipewire::init();
 
     let result = (|| -> Result<bool, Box<dyn std::error::Error>> {
         let mainloop = MainLoopBox::new(None)?;
         let _context = pipewire::context::ContextBox::new(&mainloop.loop_(), None)?;
-        // If we got here, PipeWire is available
         Ok(true)
     })();
 
-    unsafe {
-        pipewire::deinit();
-    }
     result
 }
 

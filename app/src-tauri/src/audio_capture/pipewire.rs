@@ -1,8 +1,8 @@
 use crate::audio_capture::{AudioCapture, AudioDevice, AudioStream, DeviceType};
 use std::collections::VecDeque;
 use std::error::Error;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Sender};
+use std::sync::atomic::AtomicBool;
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -15,6 +15,7 @@ pub fn create_backend() -> Box<dyn AudioCapture> {
 
 impl AudioCapture for PipewireBackend {
     fn enumerate_devices(&self) -> Result<Vec<AudioDevice>, Box<dyn Error>> {
+        println!("[PipeWire] Enumerating devices...");
         let (tx, rx) = mpsc::channel::<Result<Vec<AudioDevice>, String>>();
 
         thread::spawn(move || {
@@ -60,8 +61,7 @@ fn enumerate_devices_thread() -> Result<Vec<AudioDevice>, String> {
     use pipewire::keys::*;
     use pipewire::main_loop::MainLoopBox;
 
-    println!("[PipeWire] Enumerating devices...");
-    pipewire::init();
+    const APPLICATION_NAME_KEY: &str = "application.name";
 
     let result = (|| -> Result<Vec<AudioDevice>, Box<dyn Error>> {
         let mainloop = MainLoopBox::new(None)?;
@@ -82,35 +82,40 @@ fn enumerate_devices_thread() -> Result<Vec<AudioDevice>, String> {
             .global(move |global| {
                 if let Some(props) = global.props.as_ref() {
                     let media_class = props.get(*MEDIA_CLASS);
-                    let is_virtual = props
-                        .get(*NODE_VIRTUAL)
-                        .map(|v| v == "true")
-                        .unwrap_or(false);
-                    let app_name = props.get(*APP_NAME);
                     let node_id = global.id.to_string();
 
                     match media_class {
-                        Some("Audio/Sink") if app_name.is_some() => {
+                        Some("Stream/Output/Audio") => {
+                            let app_name = props
+                                .get(APPLICATION_NAME_KEY)
+                                .or_else(|| props.get(*NODE_NAME))
+                                .unwrap_or("Unknown App");
                             apps_clone.lock().unwrap().push(AudioDevice {
                                 id: node_id,
-                                name: format!("[app] {}", app_name.unwrap()),
+                                name: format!("[app] {}", app_name),
                                 device_type: DeviceType::Application,
                             });
                         }
-                        Some("Audio/Sink") if is_virtual => {
-                            let desc = props.get(*NODE_DESCRIPTION).unwrap_or("Unknown");
-                            monitors_clone.lock().unwrap().push(AudioDevice {
-                                id: node_id,
-                                name: format!("[out] Monitor of {}", desc),
-                                device_type: DeviceType::Monitor,
-                            });
-                        }
                         Some("Audio/Source") => {
-                            let desc = props.get(*NODE_DESCRIPTION).unwrap_or("Unknown");
+                            let desc = props
+                                .get(*NODE_DESCRIPTION)
+                                .or_else(|| props.get(*NODE_NAME))
+                                .unwrap_or("Unknown Input");
                             inputs_clone.lock().unwrap().push(AudioDevice {
                                 id: node_id,
                                 name: format!("[in] {}", desc),
                                 device_type: DeviceType::Input,
+                            });
+                        }
+                        Some("Audio/Sink") => {
+                            let desc = props
+                                .get(*NODE_DESCRIPTION)
+                                .or_else(|| props.get(*NODE_NAME))
+                                .unwrap_or("Unknown Output");
+                            monitors_clone.lock().unwrap().push(AudioDevice {
+                                id: node_id,
+                                name: format!("[out] Monitor of {}", desc),
+                                device_type: DeviceType::Monitor,
                             });
                         }
                         _ => {}
@@ -144,8 +149,5 @@ fn enumerate_devices_thread() -> Result<Vec<AudioDevice>, String> {
         Ok(all_devices)
     })();
 
-    unsafe {
-        pipewire::deinit();
-    }
     result.map_err(|e| format!("PipeWire error: {}", e))
 }
