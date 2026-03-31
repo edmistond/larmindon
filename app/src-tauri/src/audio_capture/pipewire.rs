@@ -7,10 +7,15 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-pub struct PipewireBackend;
+pub struct PipewireBackend {
+    /// Cache of last enumerated devices so start() can look up device type
+    last_devices: Mutex<Vec<AudioDevice>>,
+}
 
 pub fn create_backend() -> Box<dyn AudioCapture> {
-    Box::new(PipewireBackend)
+    Box::new(PipewireBackend {
+        last_devices: Mutex::new(Vec::new()),
+    })
 }
 
 impl AudioCapture for PipewireBackend {
@@ -23,11 +28,15 @@ impl AudioCapture for PipewireBackend {
             let _ = tx.send(result);
         });
 
-        match rx.recv_timeout(Duration::from_millis(2000)) {
-            Ok(Ok(devices)) => Ok(devices),
-            Ok(Err(e)) => Err(e.into()),
-            Err(_) => Err("Timeout enumerating PipeWire devices".into()),
-        }
+        let devices = match rx.recv_timeout(Duration::from_millis(2000)) {
+            Ok(Ok(devices)) => devices,
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => return Err("Timeout enumerating PipeWire devices".into()),
+        };
+
+        // Cache for later lookup in start()
+        *self.last_devices.lock().unwrap() = devices.clone();
+        Ok(devices)
     }
 
     fn start(
@@ -37,7 +46,21 @@ impl AudioCapture for PipewireBackend {
         stop_flag: Arc<AtomicBool>,
     ) -> Result<Box<dyn AudioStream>, Box<dyn Error>> {
         let device_id = device_id.ok_or("Device ID required for PipeWire")?;
-        println!("[PipeWire] Starting stream for device: {}", device_id);
+
+        // Look up device type from cached enumeration
+        let device_type = self
+            .last_devices
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|d| d.id == device_id)
+            .map(|d| d.device_type.clone())
+            .unwrap_or(DeviceType::Application);
+
+        println!(
+            "[PipeWire] Starting stream for device: {} (type: {:?})",
+            device_id, device_type
+        );
 
         // Parse device ID as node ID
         let target_node_id: u32 = device_id
@@ -52,9 +75,13 @@ impl AudioCapture for PipewireBackend {
         let stop_flag_clone = Arc::clone(&stop_flag);
 
         let stream_thread = thread::spawn(move || {
-            if let Err(e) =
-                stream_thread_func(target_node_id, buffer_clone, stop_flag_clone, shutdown_rx)
-            {
+            if let Err(e) = stream_thread_func(
+                target_node_id,
+                device_type,
+                buffer_clone,
+                stop_flag_clone,
+                shutdown_rx,
+            ) {
                 eprintln!("[PipeWire] Stream thread error: {}", e);
             }
         });
@@ -99,18 +126,24 @@ impl AudioStream for PipewireStream {
 
 fn stream_thread_func(
     target_node_id: u32,
+    device_type: DeviceType,
     buffer: Arc<Mutex<VecDeque<f32>>>,
     stop_flag: Arc<AtomicBool>,
     shutdown_rx: mpsc::Receiver<()>,
 ) -> Result<(), Box<dyn Error>> {
+    use libspa::param::audio::{AudioFormat, AudioInfoRaw};
+    use libspa::pod::serialize::PodSerializer;
+    use libspa::pod::{Object, Pod, Value};
     use libspa::utils::Direction;
     use pipewire::main_loop::MainLoopBox;
     use pipewire::properties::properties;
+    use pipewire::spa::param::ParamType;
+    use pipewire::spa::utils::SpaTypes;
     use pipewire::stream::{StreamBox, StreamFlags};
 
     println!(
-        "[PipeWire] Stream thread starting for node {}",
-        target_node_id
+        "[PipeWire] Stream thread starting for node {} (type: {:?})",
+        target_node_id, device_type
     );
 
     // Create mainloop and context
@@ -119,11 +152,18 @@ fn stream_thread_func(
     let core = context.connect(None)?;
 
     // Create properties for the stream
-    let props = properties! {
+    let mut props = properties! {
         *pipewire::keys::MEDIA_TYPE => "Audio",
         *pipewire::keys::MEDIA_CATEGORY => "Capture",
+        *pipewire::keys::MEDIA_ROLE => "Music",
         "target.object" => target_node_id.to_string(),
     };
+
+    // For sink monitors, we need to tell PipeWire to capture from the monitor ports
+    if device_type == DeviceType::Monitor {
+        props.insert("stream.capture.sink", "true");
+        println!("[PipeWire] Capturing from sink monitor ports");
+    }
 
     // Create the stream
     let stream = StreamBox::new(&core, "larmindon-capture", props)?;
@@ -133,7 +173,6 @@ fn stream_thread_func(
     let stop_flag_clone = Arc::clone(&stop_flag);
     let mut sample_count: usize = 0;
     let mut last_log = std::time::Instant::now();
-    let mut process_call_count: usize = 0;
 
     let _listener = stream
         .add_local_listener::<()>()
@@ -144,31 +183,23 @@ fn stream_thread_func(
             );
         })
         .param_changed(|_stream, _user_data, id, param| {
-            println!("[PipeWire] Param changed: id={}", id);
             if param.is_some() {
-                println!("[PipeWire] Param received (format negotiation)");
+                println!("[PipeWire] Format negotiated (param id={})", id);
             }
         })
         .process(move |stream, _user_data| {
-            process_call_count += 1;
-
             if stop_flag_clone.load(Ordering::Relaxed) {
                 return;
             }
 
-            // Try to dequeue buffer
-            let buffer_result = stream.dequeue_buffer();
-            if buffer_result.is_none() {
-                // No buffer available - this is normal, just return
+            let Some(mut pw_buffer) = stream.dequeue_buffer() else {
                 return;
-            }
+            };
 
-            let mut pw_buffer = buffer_result.unwrap();
             let datas = pw_buffer.datas_mut();
             let mut total_samples_this_buffer = 0;
 
             for data in datas.iter_mut() {
-                // Get chunk info first before borrowing data mutably
                 let chunk = data.chunk();
                 let offset = chunk.offset() as usize;
                 let size = chunk.size() as usize;
@@ -178,15 +209,11 @@ fn stream_thread_func(
                     continue;
                 }
 
-                // Now get the actual data
                 if let Some(raw_data) = data.data() {
-                    // Extract audio samples from the buffer
-                    // Assuming f32 format for now (stride should be 4 for mono, 8 for stereo, etc.)
                     let bytes_per_sample = 4; // f32
 
-                    // Process the data
                     if stride == bytes_per_sample {
-                        // Mono f32 - copy directly
+                        // Mono f32
                         let samples = &raw_data[offset..offset + size];
                         let f32_samples: &[f32] = unsafe {
                             std::slice::from_raw_parts(
@@ -209,7 +236,6 @@ fn stream_thread_func(
                             )
                         };
 
-                        // Downmix stereo to mono
                         let mono: Vec<f32> = f32_samples
                             .chunks_exact(2)
                             .map(|frame| (frame[0] + frame[1]) / 2.0)
@@ -220,16 +246,14 @@ fn stream_thread_func(
                             guard.extend(mono.iter());
                         }
                     } else {
-                        // Other formats - log and skip for now
                         println!(
-                            "[PipeWire] Unsupported format: stride={}, size={}",
+                            "[PipeWire] Unsupported stride: {} (size={})",
                             stride, size
                         );
                     }
                 }
             }
 
-            // Log progress every second
             sample_count += total_samples_this_buffer;
             if last_log.elapsed().as_secs() >= 1 {
                 if sample_count > 0 {
@@ -237,37 +261,41 @@ fn stream_thread_func(
                         "[PipeWire] Captured {} samples in last second",
                         sample_count
                     );
-                } else {
-                    println!(
-                        "[PipeWire] No audio data in last second (buffers received but empty)"
-                    );
                 }
                 sample_count = 0;
                 last_log = std::time::Instant::now();
             }
-
-            // Buffer is automatically returned when pw_buffer is dropped
         })
         .register()?;
 
-    // Connect the stream to capture from the target node
-    // Use AUTOCONNECT flag to let PipeWire handle the connection
-    let direction = Direction::Input;
-    let mut params: Vec<&libspa::pod::Pod> = Vec::new();
+    // Build SPA format pod: request F32LE audio, let PipeWire negotiate rate/channels
+    let mut audio_info = AudioInfoRaw::new();
+    audio_info.set_format(AudioFormat::F32LE);
 
-    let flags = StreamFlags::AUTOCONNECT;
+    let obj = Object {
+        type_: SpaTypes::ObjectParamFormat.as_raw(),
+        id: ParamType::EnumFormat.as_raw(),
+        properties: audio_info.into(),
+    };
+    let values: Vec<u8> = PodSerializer::serialize(
+        std::io::Cursor::new(Vec::new()),
+        &Value::Object(obj),
+    )
+    .unwrap()
+    .0
+    .into_inner();
+    let mut params = [Pod::from_bytes(&values).unwrap()];
 
-    stream.connect(direction, Some(target_node_id), flags, &mut params)?;
+    // Connect with AUTOCONNECT + MAP_BUFFERS + RT_PROCESS (required for process callback)
+    // Use None for target_id — target.object property handles routing
+    stream.connect(
+        Direction::Input,
+        None,
+        StreamFlags::AUTOCONNECT | StreamFlags::MAP_BUFFERS | StreamFlags::RT_PROCESS,
+        &mut params,
+    )?;
 
-    println!("[PipeWire] Stream connected to node {}", target_node_id);
-
-    // Activate the stream
-    stream.set_active(true)?;
-    println!("[PipeWire] Stream activated");
-
-    // Check stream state
-    let state = stream.state();
-    println!("[PipeWire] Stream state: {:?}", state);
+    println!("[PipeWire] Stream connected, targeting node {}", target_node_id);
 
     // Run the mainloop with periodic stop checks
     let mainloop_ptr = &mainloop as *const MainLoopBox as usize;
