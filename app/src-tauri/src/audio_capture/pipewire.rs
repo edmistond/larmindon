@@ -317,9 +317,19 @@ fn stream_thread_func(
     Ok(())
 }
 
+/// Monitor device info: the AudioDevice plus the node.name for matching against default sink metadata
+struct MonitorInfo {
+    device: AudioDevice,
+    node_name: String,
+}
+
 fn enumerate_devices_thread() -> Result<Vec<AudioDevice>, String> {
     use pipewire::keys::*;
     use pipewire::main_loop::MainLoopBox;
+    use pipewire::metadata::{Metadata, MetadataListener};
+    use pipewire::properties::PropertiesBox;
+    use pipewire::registry::GlobalObject;
+    use pipewire::types::ObjectType;
 
     const APPLICATION_NAME_KEY: &str = "application.name";
 
@@ -331,15 +341,30 @@ fn enumerate_devices_thread() -> Result<Vec<AudioDevice>, String> {
 
         let apps = Arc::new(Mutex::new(Vec::new()));
         let inputs = Arc::new(Mutex::new(Vec::new()));
-        let monitors = Arc::new(Mutex::new(Vec::new()));
+        let monitors: Arc<Mutex<Vec<MonitorInfo>>> = Arc::new(Mutex::new(Vec::new()));
+        let default_sink_name: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+
+        // Store metadata globals to bind after the registry listener is set up
+        let metadata_globals: Arc<Mutex<Vec<GlobalObject<PropertiesBox>>>> =
+            Arc::new(Mutex::new(Vec::new()));
 
         let apps_clone = apps.clone();
         let inputs_clone = inputs.clone();
         let monitors_clone = monitors.clone();
+        let metadata_globals_clone = metadata_globals.clone();
 
         let _listener = registry
             .add_listener_local()
             .global(move |global| {
+                // Collect metadata globals for later binding
+                if global.type_ == ObjectType::Metadata {
+                    metadata_globals_clone
+                        .lock()
+                        .unwrap()
+                        .push(global.to_owned());
+                    return;
+                }
+
                 if let Some(props) = global.props.as_ref() {
                     let media_class = props.get(*MEDIA_CLASS);
                     // Use object.serial for device ID — target.object matches against serial,
@@ -359,6 +384,7 @@ fn enumerate_devices_thread() -> Result<Vec<AudioDevice>, String> {
                                 id: node_id,
                                 name: format!("[app] {}", app_name),
                                 device_type: DeviceType::Application,
+                                is_default: false,
                             });
                         }
                         Some("Audio/Source") => {
@@ -370,6 +396,7 @@ fn enumerate_devices_thread() -> Result<Vec<AudioDevice>, String> {
                                 id: node_id,
                                 name: format!("[in] {}", desc),
                                 device_type: DeviceType::Input,
+                                is_default: false,
                             });
                         }
                         Some("Audio/Sink") => {
@@ -377,10 +404,15 @@ fn enumerate_devices_thread() -> Result<Vec<AudioDevice>, String> {
                                 .get(*NODE_DESCRIPTION)
                                 .or_else(|| props.get(*NODE_NAME))
                                 .unwrap_or("Unknown Output");
-                            monitors_clone.lock().unwrap().push(AudioDevice {
-                                id: node_id,
-                                name: format!("[out] Monitor of {}", desc),
-                                device_type: DeviceType::Monitor,
+                            let node_name = props.get(*NODE_NAME).unwrap_or("").to_string();
+                            monitors_clone.lock().unwrap().push(MonitorInfo {
+                                device: AudioDevice {
+                                    id: node_id,
+                                    name: format!("[out] Monitor of {}", desc),
+                                    device_type: DeviceType::Monitor,
+                                    is_default: false,
+                                },
+                                node_name,
                             });
                         }
                         _ => {}
@@ -404,15 +436,89 @@ fn enumerate_devices_thread() -> Result<Vec<AudioDevice>, String> {
         // Run the mainloop - it will quit after 600ms
         mainloop.run();
 
+        // Second pass: bind metadata objects to query default sink
+        let metadata_objs = metadata_globals.lock().unwrap();
+        if !metadata_objs.is_empty() {
+            // Keep bound metadata + listeners alive during second mainloop run
+            let mut _bound_metadata: Vec<(Metadata, MetadataListener)> = Vec::new();
+
+            for obj in metadata_objs.iter() {
+                if let Ok(metadata) = registry.bind::<Metadata, _>(obj) {
+                    let dsn = default_sink_name.clone();
+                    let listener = metadata
+                        .add_listener_local()
+                        .property(move |_subject, key, _type, value| {
+                            if key == Some("default.audio.sink") {
+                                if let Some(val) = value {
+                                    // Value is JSON like {"name":"alsa_output.pci-..."}
+                                    // Parse the name field
+                                    if let Some(name) = parse_metadata_name(val) {
+                                        println!(
+                                            "[PipeWire] Default audio sink: {}",
+                                            name
+                                        );
+                                        *dsn.lock().unwrap() = Some(name);
+                                    }
+                                }
+                            }
+                            0
+                        })
+                        .register();
+                    _bound_metadata.push((metadata, listener));
+                }
+            }
+            drop(metadata_objs);
+
+            // Brief second mainloop run to receive metadata properties
+            let mainloop_ptr2 = &mainloop as *const MainLoopBox as usize;
+            let quit_timer2 = mainloop.loop_().add_timer(move |_| unsafe {
+                let ml = &*(mainloop_ptr2 as *const MainLoopBox);
+                ml.quit();
+            });
+            quit_timer2
+                .update_timer(Some(Duration::from_millis(200)), None)
+                .into_result()?;
+            mainloop.run();
+        } else {
+            drop(metadata_objs);
+        }
+
+        // Mark the default monitor based on metadata
+        let default_name = default_sink_name.lock().unwrap().clone();
+        let mut monitors_vec = monitors.lock().unwrap();
+        if let Some(ref default_name) = default_name {
+            for info in monitors_vec.iter_mut() {
+                if info.node_name == *default_name {
+                    info.device.is_default = true;
+                }
+            }
+        }
+
         // Combine results
         let mut all_devices = Vec::new();
         all_devices.extend(apps.lock().unwrap().drain(..));
         all_devices.extend(inputs.lock().unwrap().drain(..));
-        all_devices.extend(monitors.lock().unwrap().drain(..));
+        all_devices.extend(monitors_vec.drain(..).map(|m| m.device));
 
         println!("[PipeWire] Found {} devices", all_devices.len());
         Ok(all_devices)
     })();
 
     result.map_err(|e| format!("PipeWire error: {}", e))
+}
+
+/// Parse the "name" field from PipeWire metadata JSON value.
+/// e.g. `{"name":"alsa_output.pci-0000_0e_00.4.analog-stereo"}` -> `Some("alsa_output...")`
+fn parse_metadata_name(json_value: &str) -> Option<String> {
+    // Simple JSON parsing — avoid pulling in serde_json just for this
+    let trimmed = json_value.trim();
+    if !trimmed.starts_with('{') {
+        return None;
+    }
+    // Look for "name":"<value>"
+    let name_key = "\"name\":\"";
+    let start = trimmed.find(name_key)? + name_key.len();
+    let rest = &trimmed[start..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
 }

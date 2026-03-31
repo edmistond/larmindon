@@ -7,6 +7,7 @@ import "./App.css";
 interface AudioDevice {
   id: string;
   name: string;
+  is_default: boolean;
 }
 
 interface FontSettings {
@@ -33,12 +34,30 @@ function App() {
       if (prev && devs.some((d) => d.id === prev)) {
         return prev;
       }
-      return devs.length > 0 ? devs[0].id : "";
+      const defaultDev = devs.find((d) => d.is_default);
+      return defaultDev?.id ?? (devs.length > 0 ? devs[0].id : "");
     });
   }
 
   useEffect(() => {
-    refreshDevices();
+    async function init() {
+      const devs = await invoke<AudioDevice[]>("list_devices");
+      setDevices(devs);
+
+      // Pick the default device (system default monitor, or first device)
+      const defaultDev = devs.find((d) => d.is_default) ?? devs[0];
+      if (defaultDev) {
+        setSelectedDevice(defaultDev.id);
+        try {
+          await invoke("start_transcription", { deviceId: defaultDev.id });
+          setIsRunning(true);
+        } catch (e) {
+          setError(String(e));
+        }
+      }
+    }
+
+    init();
 
     const unlistenTranscription = listen<{ text: string }>(
       "transcription",
@@ -152,7 +171,7 @@ function App() {
           {devices.length === 0 && <option value="">No devices found</option>}
           {devices.map((dev) => (
             <option key={dev.id} value={dev.id}>
-              {dev.name}
+              {dev.name}{dev.is_default ? " (default)" : ""}
             </option>
           ))}
         </select>

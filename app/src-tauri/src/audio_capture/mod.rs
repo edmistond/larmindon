@@ -21,6 +21,7 @@ pub struct AudioDevice {
     pub id: String,
     pub name: String,
     pub device_type: DeviceType,
+    pub is_default: bool,
 }
 
 /// Trait for audio capture backends
@@ -54,12 +55,19 @@ pub trait AudioStream: Send {
 /// Select a default device from the list
 /// Priority: Monitor > Input > Application
 pub fn select_default_device(devices: &[AudioDevice]) -> Option<String> {
-    // Priority 1: First monitor (system audio)
+    // Priority 1: The system default monitor
     devices
         .iter()
-        .find(|d| d.device_type == DeviceType::Monitor)
+        .find(|d| d.device_type == DeviceType::Monitor && d.is_default)
         .map(|d| d.id.clone())
-        // Priority 2: First input device
+        // Priority 2: Any monitor
+        .or_else(|| {
+            devices
+                .iter()
+                .find(|d| d.device_type == DeviceType::Monitor)
+                .map(|d| d.id.clone())
+        })
+        // Priority 3: Any input device
         .or_else(|| {
             devices
                 .iter()
