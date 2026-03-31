@@ -17,7 +17,7 @@ use crate::audio_config;
 use crate::vad::{VadDecision, VadProcessor, VadState};
 
 //const MODEL_PATH: &str = "/Users/edmistond/Downloads/prs-nemotron";
-const MODEL_PATH: &str = "f:\\prs-nemotron";
+const MODEL_PATH: &str = "~/projects/prs-nemotron/";
 const VAD_MODEL_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/models/silero_vad.onnx");
 const ASR_SAMPLE_RATE: usize = 16000;
 const VAD_FRAME_SIZE: usize = 512;
