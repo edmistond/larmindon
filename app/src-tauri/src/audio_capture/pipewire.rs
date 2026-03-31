@@ -143,6 +143,12 @@ fn stream_thread_func(
                 old_state, new_state
             );
         })
+        .param_changed(|_stream, _user_data, id, param| {
+            println!("[PipeWire] Param changed: id={}", id);
+            if param.is_some() {
+                println!("[PipeWire] Param received (format negotiation)");
+            }
+        })
         .process(move |stream, _user_data| {
             process_call_count += 1;
 
@@ -245,15 +251,13 @@ fn stream_thread_func(
         .register()?;
 
     // Connect the stream to capture from the target node
+    // Use AUTOCONNECT flag to let PipeWire handle the connection
     let direction = Direction::Input;
     let mut params: Vec<&libspa::pod::Pod> = Vec::new();
 
-    stream.connect(
-        direction,
-        Some(target_node_id),
-        StreamFlags::empty(),
-        &mut params,
-    )?;
+    let flags = StreamFlags::AUTOCONNECT;
+
+    stream.connect(direction, Some(target_node_id), flags, &mut params)?;
 
     println!("[PipeWire] Stream connected to node {}", target_node_id);
 
