@@ -16,13 +16,19 @@ function App() {
   const [error, setError] = useState("");
   const transcriptRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    invoke<AudioDevice[]>("list_devices").then((devs) => {
-      setDevices(devs);
-      if (devs.length > 0) {
-        setSelectedDevice(devs[0].id);
+  async function refreshDevices() {
+    const devs = await invoke<AudioDevice[]>("list_devices");
+    setDevices(devs);
+    setSelectedDevice((prev) => {
+      if (prev && devs.some((d) => d.id === prev)) {
+        return prev;
       }
+      return devs.length > 0 ? devs[0].id : "";
     });
+  }
+
+  useEffect(() => {
+    refreshDevices();
 
     const unlistenTranscription = listen<{ text: string }>(
       "transcription",
@@ -88,6 +94,15 @@ function App() {
             </option>
           ))}
         </select>
+
+        <button
+          className="refresh-btn"
+          onClick={refreshDevices}
+          disabled={isRunning}
+          title="Refresh device list"
+        >
+          &#x21bb;
+        </button>
 
         {isRunning ? (
           <button className="stop-btn" onClick={handleStop}>
