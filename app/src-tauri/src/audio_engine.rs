@@ -12,93 +12,12 @@ use std::time::Instant;
 use tauri::{AppHandle, Emitter};
 
 use crate::audio_capture::{self, AudioCapture, AudioDevice, AudioStream};
-use crate::audio_config;
+use crate::settings::{self, Settings};
 use crate::vad::{VadDecision, VadProcessor, VadState};
 
-//const MODEL_PATH: &str = "/Users/edmistond/Downloads/prs-nemotron";
-const MODEL_PATH: &str = "~/projects/prs-nemotron/";
 const VAD_MODEL_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/models/silero_vad.onnx");
 const ASR_SAMPLE_RATE: usize = 16000;
 const VAD_FRAME_SIZE: usize = 512;
-const DEFAULT_CHUNK_MS: usize = 560;
-const DEFAULT_INTRA_THREADS: usize = 2;
-const DEFAULT_INTER_THREADS: usize = 1;
-const EMPTY_RESET_THRESHOLD: u32 = 6;
-const DEFAULT_PUNCTUATION_RESET: bool = true;
-
-/// Expand tilde (~) to home directory in a path
-fn expand_tilde(path: &str) -> std::path::PathBuf {
-    if path.starts_with("~/") {
-        if let Ok(home) = std::env::var("HOME") {
-            return std::path::PathBuf::from(home).join(&path[2..]);
-        }
-    }
-    std::path::PathBuf::from(path)
-}
-
-/// Convert a chunk duration in milliseconds to samples at 16kHz.
-/// Valid Nemotron chunk sizes: 80, 160, 560, 1120 ms.
-pub fn chunk_ms_to_samples(ms: usize) -> usize {
-    ASR_SAMPLE_RATE * ms / 1000
-}
-
-pub fn parse_chunk_ms() -> usize {
-    const VALID: &[usize] = &[80, 160, 560, 1120];
-    match std::env::var("CHUNK_MS") {
-        Ok(val) => match val.parse::<usize>() {
-            Ok(ms) if VALID.contains(&ms) => {
-                println!("Using CHUNK_MS={ms}ms from environment");
-                ms
-            }
-            Ok(ms) => {
-                eprintln!(
-                    "Invalid CHUNK_MS={ms}; must be one of {:?}. Falling back to {DEFAULT_CHUNK_MS}ms.",
-                    VALID
-                );
-                DEFAULT_CHUNK_MS
-            }
-            Err(_) => {
-                eprintln!(
-                    "Could not parse CHUNK_MS={val:?}. Falling back to {DEFAULT_CHUNK_MS}ms."
-                );
-                DEFAULT_CHUNK_MS
-            }
-        },
-        Err(_) => DEFAULT_CHUNK_MS,
-    }
-}
-
-pub fn parse_thread_config() -> (usize, usize) {
-    let intra = match std::env::var("INTRA_THREADS") {
-        Ok(val) => match val.parse::<usize>() {
-            Ok(n) if n >= 1 => {
-                println!("Using INTRA_THREADS={n} from environment");
-                n
-            }
-            _ => {
-                eprintln!("Invalid INTRA_THREADS={val:?}, falling back to {DEFAULT_INTRA_THREADS}");
-                DEFAULT_INTRA_THREADS
-            }
-        },
-        Err(_) => DEFAULT_INTRA_THREADS,
-    };
-
-    let inter = match std::env::var("INTER_THREADS") {
-        Ok(val) => match val.parse::<usize>() {
-            Ok(n) if n >= 1 => {
-                println!("Using INTER_THREADS={n} from environment");
-                n
-            }
-            _ => {
-                eprintln!("Invalid INTER_THREADS={val:?}, falling back to {DEFAULT_INTER_THREADS}");
-                DEFAULT_INTER_THREADS
-            }
-        },
-        Err(_) => DEFAULT_INTER_THREADS,
-    };
-
-    (intra, inter)
-}
 
 #[derive(Serialize, Clone)]
 pub struct TranscriptionPayload {
@@ -111,6 +30,7 @@ pub enum Command {
     },
     Start {
         device_id: Option<String>,
+        settings: Settings,
     },
     Stop,
     Shutdown,
@@ -119,7 +39,6 @@ pub enum Command {
 pub struct AudioEngine {
     app_handle: AppHandle,
     cmd_rx: mpsc::Receiver<Command>,
-    chunk_size: usize,
     capture_backend: Box<dyn AudioCapture>,
     // Active session state
     active_stream: Option<Box<dyn AudioStream>>,
@@ -131,7 +50,6 @@ impl AudioEngine {
     pub fn new(
         app_handle: AppHandle,
         cmd_rx: mpsc::Receiver<Command>,
-        chunk_size: usize,
         capture_backend: Box<dyn AudioCapture>,
     ) -> Self {
         println!(
@@ -141,7 +59,6 @@ impl AudioEngine {
         Self {
             app_handle,
             cmd_rx,
-            chunk_size,
             capture_backend,
             active_stream: None,
             processing_thread: None,
@@ -170,9 +87,9 @@ impl AudioEngine {
                     };
                     let _ = reply.send(devices);
                 }
-                Command::Start { device_id } => {
+                Command::Start { device_id, settings } => {
                     self.stop_active_session();
-                    if let Err(e) = self.start_session(device_id) {
+                    if let Err(e) = self.start_session(device_id, settings) {
                         eprintln!("Failed to start transcription: {}", e);
                         let _ = self.app_handle.emit(
                             "transcription-error",
@@ -196,7 +113,15 @@ impl AudioEngine {
     fn start_session(
         &mut self,
         device_id: Option<String>,
+        settings: Settings,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        let chunk_size = settings::chunk_ms_to_samples(settings.chunk_ms);
+        println!(
+            "Session starting with chunk_ms={}ms ({} samples), intra={}, inter={}, punctuation_reset={}, empty_reset_threshold={}",
+            settings.chunk_ms, chunk_size, settings.intra_threads, settings.inter_threads,
+            settings.punctuation_reset, settings.empty_reset_threshold
+        );
+
         // If no device specified, try to select default
         let device_id = match device_id {
             Some(id) => Some(id),
@@ -214,7 +139,6 @@ impl AudioEngine {
         let stop_flag = Arc::new(AtomicBool::new(false));
         let stop_flag_thread = Arc::clone(&stop_flag);
         let app_handle = self.app_handle.clone();
-        let chunk_size = self.chunk_size;
 
         // Start the capture backend
         let stream = self.capture_backend.start(
@@ -240,7 +164,7 @@ impl AudioEngine {
                 stop_flag_thread,
                 input_rate,
                 needs_resample,
-                chunk_size,
+                settings,
             ) {
                 Ok(()) => println!("[diag] Processing loop exited normally"),
                 Err(e) => eprintln!("[diag] Processing loop CRASHED: {}", e),
@@ -332,8 +256,9 @@ impl AudioEngine {
         stop_flag: Arc<AtomicBool>,
         input_rate: usize,
         needs_resample: bool,
-        chunk_size: usize,
+        settings: Settings,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        let chunk_size = settings::chunk_ms_to_samples(settings.chunk_ms);
         let db = Self::init_diag_db()?;
 
         db.execute(
@@ -342,9 +267,11 @@ impl AudioEngine {
         )?;
         let session_id = db.last_insert_rowid();
 
-        let (intra_threads, inter_threads) = parse_thread_config();
-        let punctuation_reset_enabled = parse_punctuation_reset();
-        let model_path = expand_tilde(MODEL_PATH);
+        let intra_threads = settings.intra_threads;
+        let inter_threads = settings.inter_threads;
+        let punctuation_reset_enabled = settings.punctuation_reset;
+        let empty_reset_threshold = settings.empty_reset_threshold;
+        let model_path = settings::expand_tilde(&settings.model_path);
         println!(
             "Loading Nemotron model from {} (intra_threads={}, inter_threads={})...",
             model_path.display(),
@@ -614,7 +541,7 @@ impl AudioEngine {
                         }
 
                         // Mid-speech reset heuristic
-                        if consecutive_empty >= EMPTY_RESET_THRESHOLD
+                        if consecutive_empty >= empty_reset_threshold
                             && vad.state() == VadState::Speech
                         {
                             let uptime = loop_start.elapsed().as_millis() as i64;
@@ -673,22 +600,3 @@ fn ends_with_sentence_punctuation(text: &str) -> bool {
     }
 }
 
-fn parse_punctuation_reset() -> bool {
-    match std::env::var("PUNCTUATION_RESET") {
-        Ok(val) => match val.to_lowercase().as_str() {
-            "0" | "false" | "no" => {
-                println!("Punctuation-based decoder reset DISABLED via PUNCTUATION_RESET={val}");
-                false
-            }
-            "1" | "true" | "yes" => {
-                println!("Punctuation-based decoder reset ENABLED via PUNCTUATION_RESET={val}");
-                true
-            }
-            _ => {
-                eprintln!("Unknown PUNCTUATION_RESET={val:?}, using default (enabled)");
-                DEFAULT_PUNCTUATION_RESET
-            }
-        },
-        Err(_) => DEFAULT_PUNCTUATION_RESET,
-    }
-}

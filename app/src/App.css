@@ -75,6 +75,17 @@ button {
     border-color: #b71c1c;
 }
 
+.prefs-btn {
+    background-color: #555;
+    padding: 0.6em 0.8em;
+    font-size: 1.1em;
+    min-width: 2.5em;
+}
+
+.prefs-btn:hover {
+    border-color: #888;
+}
+
 .refresh-btn {
     background-color: #555;
     padding: 0.6em 0.8em;

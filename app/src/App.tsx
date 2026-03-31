@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import "./App.css";
 
 interface AudioDevice {
@@ -58,6 +59,33 @@ function App() {
     }
   }, [transcript]);
 
+  async function openPreferences() {
+    const existing = await WebviewWindow.getByLabel("preferences");
+    if (existing) {
+      await existing.setFocus();
+      return;
+    }
+    new WebviewWindow("preferences", {
+      url: "preferences.html",
+      title: "Preferences",
+      width: 500,
+      height: 480,
+      resizable: false,
+      center: true,
+    });
+  }
+
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key === ",") {
+        e.preventDefault();
+        openPreferences();
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
   async function handleStart() {
     setError("");
     try {
@@ -82,6 +110,14 @@ function App() {
   return (
     <main className="container">
       <div className="controls">
+        <button
+          className="prefs-btn"
+          onClick={openPreferences}
+          title="Preferences (Ctrl+,)"
+        >
+          &#x2699;
+        </button>
+
         <select
           value={selectedDevice}
           onChange={(e) => setSelectedDevice(e.target.value)}

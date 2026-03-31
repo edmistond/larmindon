@@ -1,10 +1,12 @@
 mod audio_capture;
 mod audio_config;
 mod audio_engine;
+mod settings;
 mod vad;
 
 use audio_capture::AudioDevice;
-use audio_engine::{chunk_ms_to_samples, parse_chunk_ms, AudioEngine, Command};
+use audio_engine::{AudioEngine, Command};
+use settings::Settings;
 use std::sync::mpsc;
 use std::sync::Mutex;
 use std::thread::{self, JoinHandle};
@@ -30,11 +32,13 @@ fn list_devices(engine: State<'_, Mutex<AudioEngineHandle>>) -> Result<Vec<Audio
 fn start_transcription(
     device_id: Option<String>,
     engine: State<'_, Mutex<AudioEngineHandle>>,
+    current_settings: State<'_, Mutex<Settings>>,
 ) -> Result<(), String> {
+    let settings = current_settings.lock().map_err(|e| e.to_string())?.clone();
     let handle = engine.lock().map_err(|e| e.to_string())?;
     handle
         .cmd_tx
-        .send(Command::Start { device_id })
+        .send(Command::Start { device_id, settings })
         .map_err(|e| e.to_string())
 }
 
@@ -42,6 +46,28 @@ fn start_transcription(
 fn stop_transcription(engine: State<'_, Mutex<AudioEngineHandle>>) -> Result<(), String> {
     let handle = engine.lock().map_err(|e| e.to_string())?;
     handle.cmd_tx.send(Command::Stop).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_settings(current_settings: State<'_, Mutex<Settings>>) -> Result<Settings, String> {
+    let settings = current_settings.lock().map_err(|e| e.to_string())?;
+    Ok(settings.clone())
+}
+
+#[tauri::command]
+fn save_settings(
+    new_settings: Settings,
+    current_settings: State<'_, Mutex<Settings>>,
+) -> Result<(), String> {
+    new_settings.save()?;
+    let mut settings = current_settings.lock().map_err(|e| e.to_string())?;
+    *settings = new_settings;
+    Ok(())
+}
+
+#[tauri::command]
+fn get_default_settings() -> Settings {
+    Settings::default()
 }
 
 /// Create the appropriate audio capture backend based on platform and features
@@ -133,22 +159,29 @@ fn test_pipewire_available() -> Result<bool, Box<dyn std::error::Error>> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            // Load settings: file -> env overrides
+            let settings = Settings::load().with_env_overrides();
+            println!(
+                "Settings: chunk_ms={}, intra={}, inter={}, punctuation_reset={}, model={}",
+                settings.chunk_ms,
+                settings.intra_threads,
+                settings.inter_threads,
+                settings.punctuation_reset,
+                settings.model_path,
+            );
+
+            app.manage(Mutex::new(settings));
+
             let (cmd_tx, cmd_rx) = mpsc::channel();
             let app_handle = app.handle().clone();
-
-            let chunk_ms = parse_chunk_ms();
-            let chunk_size = chunk_ms_to_samples(chunk_ms);
-            println!(
-                "Nemotron chunk size: {}ms ({} samples)",
-                chunk_ms, chunk_size
-            );
 
             // Create the appropriate audio capture backend
             let capture_backend = create_audio_backend();
 
             let engine_thread = thread::spawn(move || {
-                let engine = AudioEngine::new(app_handle, cmd_rx, chunk_size, capture_backend);
+                let engine = AudioEngine::new(app_handle, cmd_rx, capture_backend);
                 engine.run();
             });
 
@@ -163,7 +196,11 @@ pub fn run() {
             list_devices,
             start_transcription,
             stop_transcription,
+            get_settings,
+            save_settings,
+            get_default_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+

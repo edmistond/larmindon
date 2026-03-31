@@ -1,0 +1,174 @@
+:root {
+    font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
+    font-size: 16px;
+    line-height: 24px;
+    font-weight: 400;
+    color: #e0e0e0;
+    background-color: #2a2a2a;
+}
+
+.prefs-container {
+    padding: 1.5rem;
+    box-sizing: border-box;
+}
+
+.prefs-container h2 {
+    margin: 0 0 1.2rem 0;
+    font-size: 1.3em;
+    font-weight: 600;
+}
+
+.prefs-form {
+    display: flex;
+    flex-direction: column;
+    gap: 0.9rem;
+}
+
+.prefs-label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    font-size: 0.9em;
+    color: #bbb;
+}
+
+.prefs-row {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.prefs-input,
+.prefs-select {
+    border-radius: 6px;
+    border: 1px solid #555;
+    padding: 0.5em 0.8em;
+    font-size: 1em;
+    font-family: inherit;
+    color: #e0e0e0;
+    background-color: #383838;
+    outline: none;
+}
+
+.prefs-input:focus,
+.prefs-select:focus {
+    border-color: #888;
+}
+
+.prefs-input-wide {
+    flex: 1;
+}
+
+.prefs-input-narrow {
+    width: 5em;
+}
+
+.prefs-select {
+    width: 10em;
+}
+
+.prefs-checkbox-label {
+    flex-direction: row;
+    align-items: center;
+    gap: 0.5rem;
+    cursor: pointer;
+}
+
+.prefs-checkbox-label input[type="checkbox"] {
+    width: 1.1em;
+    height: 1.1em;
+    accent-color: #388e3c;
+}
+
+.prefs-browse-btn {
+    border-radius: 6px;
+    border: 1px solid transparent;
+    padding: 0.5em 0.8em;
+    font-size: 0.9em;
+    font-family: inherit;
+    color: #ccc;
+    background-color: #555;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.prefs-browse-btn:hover {
+    border-color: #888;
+}
+
+.prefs-note {
+    margin: 1rem 0 0.3rem 0;
+    font-size: 0.85em;
+    color: #999;
+    font-style: italic;
+}
+
+.prefs-error {
+    color: #ef5350;
+    margin: 0.3rem 0;
+    font-size: 0.9em;
+}
+
+.prefs-saved {
+    color: #66bb6a;
+    margin: 0.3rem 0;
+    font-size: 0.9em;
+}
+
+.prefs-actions {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: 1px solid #444;
+}
+
+.prefs-actions-right {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.prefs-btn {
+    border-radius: 6px;
+    border: 1px solid transparent;
+    padding: 0.5em 1em;
+    font-size: 0.95em;
+    font-weight: 500;
+    font-family: inherit;
+    cursor: pointer;
+    outline: none;
+}
+
+.prefs-btn-save {
+    background-color: #388e3c;
+    color: #fff;
+}
+
+.prefs-btn-save:hover {
+    border-color: #1b5e20;
+}
+
+.prefs-btn-save:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.prefs-btn-cancel {
+    background-color: #555;
+    color: #ccc;
+}
+
+.prefs-btn-cancel:hover {
+    border-color: #888;
+}
+
+.prefs-btn-reset {
+    background-color: transparent;
+    color: #999;
+    border: 1px solid #555;
+}
+
+.prefs-btn-reset:hover {
+    border-color: #888;
+    color: #ccc;
+}
