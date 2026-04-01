@@ -3,6 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { Menu, MenuItem, PredefinedMenuItem, CheckMenuItem } from "@tauri-apps/api/menu";
+import { LogicalPosition } from "@tauri-apps/api/dpi";
 import "./App.css";
 
 interface AudioDevice {
@@ -23,6 +25,7 @@ function App() {
   const [transcript, setTranscript] = useState("");
   const [error, setError] = useState("");
   const transcriptRef = useRef<HTMLDivElement>(null);
+  const [alwaysOnTop, setAlwaysOnTop] = useState(false);
   const [fontSettings, setFontSettings] = useState<FontSettings>({
     font_family: "",
     font_size_px: 0,
@@ -170,71 +173,121 @@ function App() {
     }
   }
 
-  return (
-    <main className="container">
-      <div className="titlebar" data-tauri-drag-region>
-        <span className="titlebar-title" data-tauri-drag-region>Larmindon</span>
-        <button
-          className="titlebar-close"
-          onClick={() => getCurrentWindow().close()}
-          title="Close"
-        >
-          &#x2715;
-        </button>
-      </div>
-      <div className="controls">
-        <button
-          className="prefs-btn"
-          onClick={openPreferences}
-          title="Preferences (Ctrl+,)"
-        >
-          &#x2699;
-        </button>
+  async function toggleAlwaysOnTop() {
+    const next = !alwaysOnTop;
+    try {
+      await getCurrentWindow().setAlwaysOnTop(next);
+      setAlwaysOnTop(next);
+    } catch (e) {
+      setError(`Always on top: ${String(e)}`);
+    }
+  }
 
-        <select
-          value={selectedDevice}
-          onChange={async (e) => {
-            const newId = e.target.value;
-            setSelectedDevice(newId);
+  async function showHamburgerMenu(e: React.MouseEvent<HTMLButtonElement>) {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const items = [];
+
+    // Audio source section
+    for (const dev of devices) {
+      const label = dev.name + (dev.is_default ? " (default)" : "");
+      items.push(
+        await CheckMenuItem.new({
+          text: label,
+          checked: dev.id === selectedDevice,
+          action: async () => {
+            setSelectedDevice(dev.id);
             if (isRunning) {
               try {
-                await invoke("switch_source", { deviceId: newId });
+                await invoke("switch_source", { deviceId: dev.id });
               } catch (err) {
                 setError(String(err));
               }
             }
-          }}
-        >
-          {devices.length === 0 && <option value="">No devices found</option>}
-          {devices.map((dev) => (
-            <option key={dev.id} value={dev.id}>
-              {dev.name}{dev.is_default ? " (default)" : ""}
-            </option>
-          ))}
-        </select>
+          },
+        })
+      );
+    }
 
-        <button
-          className="refresh-btn"
-          onClick={refreshDevices}
-          disabled={isRunning}
-          title="Refresh device list"
-        >
-          &#x21bb;
-        </button>
+    if (devices.length === 0) {
+      items.push(
+        await MenuItem.new({ text: "No devices found", enabled: false })
+      );
+    }
 
-        {isRunning ? (
-          <button className="stop-btn" onClick={handleStop}>
-            Stop
-          </button>
-        ) : (
+    items.push(await PredefinedMenuItem.new({ item: "Separator" }));
+
+    items.push(
+      await MenuItem.new({
+        text: "Refresh Devices",
+        enabled: !isRunning,
+        action: () => refreshDevices(),
+      })
+    );
+
+    items.push(await PredefinedMenuItem.new({ item: "Separator" }));
+
+    items.push(
+      await CheckMenuItem.new({
+        text: "Always on Top",
+        checked: alwaysOnTop,
+        action: () => toggleAlwaysOnTop(),
+      })
+    );
+
+    items.push(
+      await MenuItem.new({
+        text: "Preferences...",
+        action: () => openPreferences(),
+      })
+    );
+
+    const menu = await Menu.new({ items });
+    await menu.popup(new LogicalPosition(rect.left, rect.bottom));
+  }
+
+  return (
+    <main className="container">
+      <div className="titlebar" data-tauri-drag-region>
+        <div className="titlebar-left" data-tauri-drag-region>
           <button
-            className="start-btn"
-            onClick={handleStart}
-            disabled={devices.length === 0}
+            className="titlebar-btn hamburger-btn"
+            onClick={showHamburgerMenu}
+            title="Menu"
           >
-            Start
+            &#x2630;
           </button>
-        )}
+          <span className="titlebar-title" data-tauri-drag-region>Larmindon</span>
+        </div>
+        <div className="titlebar-right">
+          <button
+            className={`titlebar-btn pin-btn${alwaysOnTop ? " pinned" : ""}`}
+            onClick={toggleAlwaysOnTop}
+            title={alwaysOnTop ? "Unpin from top" : "Pin on top"}
+          >
+            &#x1F4CC;
+          </button>
+          {isRunning ? (
+            <button className="titlebar-btn stop-indicator" onClick={handleStop} title="Stop transcription">
+              &#x25CF;
+            </button>
+          ) : (
+            <button
+              className="titlebar-btn start-indicator"
+              onClick={handleStart}
+              disabled={devices.length === 0}
+              title="Start transcription"
+            >
+              &#x25CF;
+            </button>
+          )}
+          <button
+            className="titlebar-btn titlebar-close"
+            onClick={() => getCurrentWindow().close()}
+            title="Close"
+          >
+            &#x2715;
+          </button>
+        </div>
       </div>
 
       {error && <p className="error">{error}</p>}
