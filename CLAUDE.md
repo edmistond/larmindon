@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Project Overview
+
+This is a Tauri desktop app using Rust backend and TypeScript frontend. PipeWire is used for audio capture on Linux.
+
 ## Coding
 
 Break work into discrete tasks and commit them in chunks so we can roll back easily if something breaks.
@@ -88,3 +92,15 @@ SQLite database at `larmindon_diag.sqlite` (project root). Tables: `sessions`, `
 - **Pre-speech ring buffer**: 500ms of audio is retained before speech onset so the ASR gets context before the first voiced frame
 - **Punctuation-based decoder reset**: When enabled (default), the decoder resets after emitting text ending with `.`, `?`, or `!` (excluding ellipsis and decimals). Complementary to the mid-speech empty-chunk reset — gives the decoder a clean slate at sentence boundaries
 - **macOS needs virtual loopback** (e.g., BlackHole or Loopback) for system audio capture
+
+## Bug Fixes
+
+When fixing bugs, verify the fix actually works before committing. If a first attempt doesn't resolve the issue, re-examine assumptions about scope, thread lifecycle, and shared state before retrying.
+
+## PipeWire Notes
+
+For PipeWire integration: use `object.serial` (not `global.id`) for device targeting. Always set explicit format params (rate, channels, format) when creating capture streams.
+
+## Rust Patterns
+
+When spawning background threads or watchers in Rust, ensure the handle is stored/held to prevent immediate drop. Check that shared stop flags don't inadvertently kill sibling threads.
