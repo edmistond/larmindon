@@ -327,7 +327,12 @@ See [STACK.md](STACK.md) for the full list of technologies used.
 
 ## Arch Linux Setup
 
-When setting up this project on a fresh Arch Linux system, the following packages must be installed:
+Clarification here: My primary Linux desktop is running [Project Bluefin](https://projectbluefin.io), an immutable Linux
+based on Fedora Silverblue. Bluefin pushes a _heavily_ containerized approach to development practices, which is great
+for isolation but can be a bit weird until you get used to it.
+
+For my dev environment, I am using an Arch Linux container since `pacman` makes getting current deps installed very easy.
+This is the list of packages that I needed to install:
 
 ### System Dependencies
 
