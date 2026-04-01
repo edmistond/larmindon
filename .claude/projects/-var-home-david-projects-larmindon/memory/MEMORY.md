@@ -1,0 +1,1 @@
+- [Deployment context](project_deployment.md) — Bluefin/Wayland, Arch dev container, shipping as Flatpak
