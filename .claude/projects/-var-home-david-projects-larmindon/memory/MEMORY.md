@@ -1,1 +1,2 @@
 - [Deployment context](project_deployment.md) — Bluefin/Wayland, Arch dev container, shipping as Flatpak
+- [Flatpak packaging](reference_flatpak.md) — Two approaches, gotchas for PipeWire/paths, key links
