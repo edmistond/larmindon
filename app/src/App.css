@@ -16,11 +16,48 @@
 
 .container {
     margin: 0;
-    padding: 1.5rem;
+    padding: 0 1.5rem 1.5rem 1.5rem;
     display: flex;
     flex-direction: column;
     height: 100vh;
     box-sizing: border-box;
+}
+
+.titlebar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 32px;
+    padding: 0 0.5rem;
+    margin: 0 -1.5rem;
+    background-color: #222;
+    user-select: none;
+    -webkit-user-select: none;
+    flex-shrink: 0;
+}
+
+.titlebar-title {
+    font-size: 0.8em;
+    color: #999;
+    padding-left: 0.5rem;
+}
+
+.titlebar-close {
+    background: transparent;
+    border: none;
+    color: #999;
+    font-size: 0.9em;
+    padding: 0 0.5rem;
+    height: 100%;
+    border-radius: 0;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+}
+
+.titlebar-close:hover {
+    background-color: #d32f2f;
+    color: #fff;
 }
 
 .controls {

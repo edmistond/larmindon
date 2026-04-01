@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import "./App.css";
 
 interface AudioDevice {
@@ -171,6 +172,16 @@ function App() {
 
   return (
     <main className="container">
+      <div className="titlebar" data-tauri-drag-region>
+        <span className="titlebar-title" data-tauri-drag-region>Larmindon</span>
+        <button
+          className="titlebar-close"
+          onClick={() => getCurrentWindow().close()}
+          title="Close"
+        >
+          &#x2715;
+        </button>
+      </div>
       <div className="controls">
         <button
           className="prefs-btn"
