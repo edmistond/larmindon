@@ -1,20 +1,23 @@
-use crate::audio_capture::{AudioCapture, AudioDevice, AudioStream, DeviceType};
-use std::collections::VecDeque;
+use crate::audio_capture::{ActiveSessionInfo, AudioCapture, AudioDevice, AudioStream, DeviceType};
+use crate::audio_engine::Command;
+use std::collections::{HashMap, VecDeque};
 use std::error::Error;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
+use tauri::{AppHandle, Emitter};
 
 pub struct PipewireBackend {
-    /// Cache of last enumerated devices so start() can look up device type
-    last_devices: Mutex<Vec<AudioDevice>>,
+    /// Cache of last enumerated devices so start() can look up device type.
+    /// Shared with the watcher thread so it can keep the cache current.
+    pub last_devices: Arc<Mutex<Vec<AudioDevice>>>,
 }
 
 pub fn create_backend() -> Box<dyn AudioCapture> {
     Box::new(PipewireBackend {
-        last_devices: Mutex::new(Vec::new()),
+        last_devices: Arc::new(Mutex::new(Vec::new())),
     })
 }
 
@@ -96,6 +99,10 @@ impl AudioCapture for PipewireBackend {
     fn name(&self) -> &'static str {
         "PipeWire"
     }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
 }
 
 struct PipewireStream {
@@ -108,8 +115,9 @@ impl AudioStream for PipewireStream {
     fn stop(mut self: Box<Self>) {
         println!("[PipeWire] Stopping stream...");
 
-        // Signal the thread to stop
-        self.stop_flag.store(true, Ordering::Relaxed);
+        // Signal the stream thread to stop via shutdown channel.
+        // Do NOT set stop_flag here — it's shared with the processing thread
+        // and must only be set by stop_active_session() for a full shutdown.
         let _ = self.shutdown_tx.send(());
 
         // Wait for thread to finish
@@ -385,6 +393,7 @@ fn enumerate_devices_thread() -> Result<Vec<AudioDevice>, String> {
                                 name: format!("[app] {}", app_name),
                                 device_type: DeviceType::Application,
                                 is_default: false,
+                                application_name: Some(app_name.to_string()),
                             });
                         }
                         Some("Audio/Source") => {
@@ -397,6 +406,7 @@ fn enumerate_devices_thread() -> Result<Vec<AudioDevice>, String> {
                                 name: format!("[in] {}", desc),
                                 device_type: DeviceType::Input,
                                 is_default: false,
+                                application_name: None,
                             });
                         }
                         Some("Audio/Sink") => {
@@ -411,6 +421,7 @@ fn enumerate_devices_thread() -> Result<Vec<AudioDevice>, String> {
                                     name: format!("[out] Monitor of {}", desc),
                                     device_type: DeviceType::Monitor,
                                     is_default: false,
+                                    application_name: None,
                                 },
                                 node_name,
                             });
@@ -521,4 +532,283 @@ fn parse_metadata_name(json_value: &str) -> Option<String> {
     let rest = &trimmed[start..];
     let end = rest.find('"')?;
     Some(rest[..end].to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Persistent PipeWire device watcher
+// ---------------------------------------------------------------------------
+
+/// Tracks a device in the watcher's internal map
+struct DeviceEntry {
+    device: AudioDevice,
+    node_name: Option<String>,
+}
+
+pub struct PipewireWatcher {
+    stop_flag: Arc<AtomicBool>,
+    _thread: JoinHandle<()>,
+}
+
+impl Drop for PipewireWatcher {
+    fn drop(&mut self) {
+        self.stop_flag.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Build an AudioDevice from PipeWire global properties.
+/// Returns (AudioDevice, registry_global_id) or None if the node isn't an audio device.
+fn device_from_props(
+    global_id: u32,
+    props: &pipewire::spa::utils::dict::DictRef,
+) -> Option<AudioDevice> {
+    use pipewire::keys::*;
+    const APPLICATION_NAME_KEY: &str = "application.name";
+
+    let media_class = props.get(*MEDIA_CLASS)?;
+    let node_id = props
+        .get("object.serial")
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| global_id.to_string());
+
+    match media_class {
+        "Stream/Output/Audio" => {
+            let app_name = props
+                .get(APPLICATION_NAME_KEY)
+                .or_else(|| props.get(*NODE_NAME))
+                .unwrap_or("Unknown App");
+            Some(AudioDevice {
+                id: node_id,
+                name: format!("[app] {}", app_name),
+                device_type: DeviceType::Application,
+                is_default: false,
+                application_name: Some(app_name.to_string()),
+            })
+        }
+        "Audio/Source" => {
+            let desc = props
+                .get(*NODE_DESCRIPTION)
+                .or_else(|| props.get(*NODE_NAME))
+                .unwrap_or("Unknown Input");
+            Some(AudioDevice {
+                id: node_id,
+                name: format!("[in] {}", desc),
+                device_type: DeviceType::Input,
+                is_default: false,
+                application_name: None,
+            })
+        }
+        "Audio/Sink" => {
+            let desc = props
+                .get(*NODE_DESCRIPTION)
+                .or_else(|| props.get(*NODE_NAME))
+                .unwrap_or("Unknown Output");
+            Some(AudioDevice {
+                id: node_id,
+                name: format!("[out] Monitor of {}", desc),
+                device_type: DeviceType::Monitor,
+                is_default: false,
+                application_name: None,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Start a persistent PipeWire device watcher that emits `"devices-changed"` events
+/// and sends `Command::Reconnect` when a previously-active app stream reappears.
+pub fn start_watcher(
+    app_handle: AppHandle,
+    cmd_tx: mpsc::Sender<Command>,
+    active_session_info: Arc<Mutex<ActiveSessionInfo>>,
+    devices_cache: Arc<Mutex<Vec<AudioDevice>>>,
+) -> PipewireWatcher {
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    let stop_flag_clone = stop_flag.clone();
+
+    let thread = thread::spawn(move || {
+        if let Err(e) = watcher_thread(
+            app_handle,
+            cmd_tx,
+            active_session_info,
+            devices_cache,
+            stop_flag_clone,
+        ) {
+            eprintln!("[PipeWire Watcher] Thread error: {}", e);
+        }
+    });
+
+    PipewireWatcher {
+        stop_flag,
+        _thread: thread,
+    }
+}
+
+fn watcher_thread(
+    app_handle: AppHandle,
+    cmd_tx: mpsc::Sender<Command>,
+    active_session_info: Arc<Mutex<ActiveSessionInfo>>,
+    devices_cache: Arc<Mutex<Vec<AudioDevice>>>,
+    stop_flag: Arc<AtomicBool>,
+) -> Result<(), Box<dyn Error>> {
+    use pipewire::main_loop::MainLoopBox;
+
+    let mainloop = MainLoopBox::new(None)?;
+    let context = pipewire::context::ContextBox::new(&mainloop.loop_(), None)?;
+    let core = context.connect(None)?;
+    let registry = core.get_registry()?;
+
+    // Device map keyed by registry global.id for tracking removals
+    let devices: Arc<Mutex<HashMap<u32, DeviceEntry>>> = Arc::new(Mutex::new(HashMap::new()));
+
+    // Default sink name from metadata
+    let default_sink_name: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+
+    let devices_clone = devices.clone();
+    let default_sink_name_clone = default_sink_name.clone();
+    let active_session_info_clone = active_session_info.clone();
+    let app_handle_clone = app_handle.clone();
+    let devices_cache_clone = devices_cache.clone();
+
+    let _listener = registry
+        .add_listener_local()
+        .global(move |global| {
+            if let Some(props) = global.props.as_ref() {
+                if let Some(device) = device_from_props(global.id, props.as_ref()) {
+                    let node_name = props.get("node.name").map(|s| s.to_string());
+
+                    devices_clone.lock().unwrap().insert(
+                        global.id,
+                        DeviceEntry {
+                            device,
+                            node_name,
+                        },
+                    );
+
+                    // Emit updated device list
+                    emit_devices_changed(
+                        &devices_clone,
+                        &default_sink_name_clone,
+                        &app_handle_clone,
+                        &devices_cache_clone,
+                    );
+                }
+            }
+        })
+        .global_remove({
+            let devices_clone = devices.clone();
+            let default_sink_name_clone = default_sink_name.clone();
+            let app_handle_clone = app_handle.clone();
+            let devices_cache_clone = devices_cache.clone();
+            let active_session_info_clone2 = active_session_info_clone.clone();
+            let cmd_tx_clone = cmd_tx.clone();
+
+            move |id| {
+                let removed = devices_clone.lock().unwrap().remove(&id);
+
+                if let Some(entry) = &removed {
+                    println!(
+                        "[PipeWire Watcher] Device removed: {} ({})",
+                        entry.device.name, entry.device.id
+                    );
+
+                    // If the active stream disappeared, fall back to default monitor
+                    let session_info = active_session_info_clone2.lock().unwrap();
+                    if session_info.device_id.as_ref() == Some(&entry.device.id) {
+                        // Find the default monitor from the current device map
+                        let default_monitor = {
+                            let map = devices_clone.lock().unwrap();
+                            let default_name = default_sink_name_clone.lock().unwrap().clone();
+                            // Prefer is_default monitor, then any monitor
+                            map.values()
+                                .find(|e| {
+                                    e.device.device_type == DeviceType::Monitor
+                                        && default_name.as_ref() == e.node_name.as_ref()
+                                })
+                                .or_else(|| {
+                                    map.values()
+                                        .find(|e| e.device.device_type == DeviceType::Monitor)
+                                })
+                                .map(|e| e.device.id.clone())
+                        };
+
+                        if let Some(monitor_id) = default_monitor {
+                            println!(
+                                "[PipeWire Watcher] Active stream lost, falling back to default monitor: {}",
+                                monitor_id
+                            );
+                            drop(session_info);
+                            let _ = cmd_tx_clone.send(Command::Reconnect {
+                                device_id: monitor_id,
+                            });
+                        }
+                    }
+                }
+
+                // Emit updated device list
+                emit_devices_changed(
+                    &devices_clone,
+                    &default_sink_name_clone,
+                    &app_handle_clone,
+                    &devices_cache_clone,
+                );
+            }
+        })
+        .register();
+
+    // Stop flag check timer (100ms)
+    let mainloop_ptr = &mainloop as *const MainLoopBox as usize;
+    let check_timer = mainloop.loop_().add_timer(move |_| {
+        if stop_flag.load(Ordering::Relaxed) {
+            unsafe {
+                let ml = &*(mainloop_ptr as *const MainLoopBox);
+                ml.quit();
+            }
+        }
+    });
+    check_timer
+        .update_timer(
+            Some(Duration::from_millis(100)),
+            Some(Duration::from_millis(100)),
+        )
+        .into_result()?;
+
+    println!("[PipeWire Watcher] Started, listening for device changes");
+    mainloop.run();
+
+    println!("[PipeWire Watcher] Stopped");
+    Ok(())
+}
+
+/// Build a sorted device list from the watcher's device map, apply default sink marking,
+/// emit "devices-changed" event to frontend, and update the backend's device cache.
+fn emit_devices_changed(
+    devices: &Arc<Mutex<HashMap<u32, DeviceEntry>>>,
+    default_sink_name: &Arc<Mutex<Option<String>>>,
+    app_handle: &AppHandle,
+    devices_cache: &Arc<Mutex<Vec<AudioDevice>>>,
+) {
+    let map = devices.lock().unwrap();
+    let default_name = default_sink_name.lock().unwrap().clone();
+
+    let mut device_list: Vec<AudioDevice> = map
+        .values()
+        .map(|entry| {
+            let mut dev = entry.device.clone();
+            // Mark default monitor
+            if let (Some(ref dn), Some(ref nn)) = (&default_name, &entry.node_name) {
+                if dev.device_type == DeviceType::Monitor && nn == dn {
+                    dev.is_default = true;
+                }
+            }
+            dev
+        })
+        .collect();
+
+    device_list = crate::audio_capture::sort_devices_by_priority(device_list);
+
+    // Update backend cache
+    *devices_cache.lock().unwrap() = device_list.clone();
+
+    // Emit to frontend
+    let _ = app_handle.emit("devices-changed", &device_list);
 }

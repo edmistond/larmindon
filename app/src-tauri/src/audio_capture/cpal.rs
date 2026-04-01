@@ -33,6 +33,7 @@ impl AudioCapture for CpalBackend {
                         name: format!("[in] {}", raw_name),
                         device_type: DeviceType::Input,
                         is_default: false,
+                        application_name: None,
                     });
                 }
             }
@@ -55,6 +56,7 @@ impl AudioCapture for CpalBackend {
                         name: format!("[out] {}", raw_name),
                         device_type: DeviceType::Monitor,
                         is_default: false,
+                        application_name: None,
                     });
                 }
             }

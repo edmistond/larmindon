@@ -11,7 +11,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Instant;
 use tauri::{AppHandle, Emitter};
 
-use crate::audio_capture::{self, AudioCapture, AudioDevice, AudioStream};
+use crate::audio_capture::{self, ActiveSessionInfo, AudioCapture, AudioDevice, AudioStream};
 use crate::settings::{self, Settings};
 use crate::vad::{VadDecision, VadProcessor, VadState};
 
@@ -33,6 +33,11 @@ pub enum Command {
         settings: Settings,
     },
     Stop,
+    /// Swap the audio stream to a new device without restarting the processing thread.
+    /// Used by the PipeWire watcher when an app stream reappears.
+    Reconnect {
+        device_id: String,
+    },
     Shutdown,
 }
 
@@ -44,6 +49,8 @@ pub struct AudioEngine {
     active_stream: Option<Box<dyn AudioStream>>,
     processing_thread: Option<JoinHandle<()>>,
     stop_flag: Option<Arc<AtomicBool>>,
+    active_buffer: Option<Arc<Mutex<VecDeque<f32>>>>,
+    active_session_info: Arc<Mutex<ActiveSessionInfo>>,
 }
 
 impl AudioEngine {
@@ -51,6 +58,7 @@ impl AudioEngine {
         app_handle: AppHandle,
         cmd_rx: mpsc::Receiver<Command>,
         capture_backend: Box<dyn AudioCapture>,
+        active_session_info: Arc<Mutex<ActiveSessionInfo>>,
     ) -> Self {
         println!(
             "AudioEngine initialized with {} backend",
@@ -63,6 +71,8 @@ impl AudioEngine {
             active_stream: None,
             processing_thread: None,
             stop_flag: None,
+            active_buffer: None,
+            active_session_info,
         }
     }
 
@@ -102,6 +112,9 @@ impl AudioEngine {
                 Command::Stop => {
                     self.stop_active_session();
                 }
+                Command::Reconnect { device_id } => {
+                    self.reconnect_stream(device_id);
+                }
                 Command::Shutdown => {
                     self.stop_active_session();
                     break;
@@ -140,6 +153,14 @@ impl AudioEngine {
         let stop_flag_thread = Arc::clone(&stop_flag);
         let app_handle = self.app_handle.clone();
 
+        // Look up the device info for session tracking (used by watcher for reconnect)
+        let device_info = device_id.as_ref().and_then(|id| {
+            self.capture_backend
+                .enumerate_devices()
+                .ok()
+                .and_then(|devs| devs.into_iter().find(|d| d.id == *id))
+        });
+
         // Start the capture backend
         let stream = self.capture_backend.start(
             device_id.clone(),
@@ -156,11 +177,12 @@ impl AudioEngine {
             input_rate, needs_resample
         );
 
+        let buffer_for_thread = Arc::clone(&buffer);
         let processing_thread = thread::spawn(move || {
             println!("[diag] Processing thread started");
             match Self::processing_loop(
                 app_handle,
-                buffer,
+                buffer_for_thread,
                 stop_flag_thread,
                 input_rate,
                 needs_resample,
@@ -174,6 +196,14 @@ impl AudioEngine {
         self.active_stream = Some(stream);
         self.processing_thread = Some(processing_thread);
         self.stop_flag = Some(stop_flag);
+        self.active_buffer = Some(buffer);
+
+        // Update shared session info for the watcher
+        if let Ok(mut info) = self.active_session_info.lock() {
+            info.device_id = device_id;
+            info.application_name = device_info.as_ref().and_then(|d| d.application_name.clone());
+            info.device_type = device_info.map(|d| d.device_type);
+        }
 
         Ok(())
     }
@@ -190,6 +220,68 @@ impl AudioEngine {
             match handle.join() {
                 Ok(()) => println!("[diag] Processing thread joined cleanly"),
                 Err(e) => eprintln!("[diag] Processing thread PANICKED: {:?}", e),
+            }
+        }
+        self.active_buffer = None;
+
+        // Clear shared session info
+        if let Ok(mut info) = self.active_session_info.lock() {
+            *info = ActiveSessionInfo::default();
+        }
+    }
+
+    /// Swap the audio stream to a new device without restarting the processing thread.
+    /// The processing loop keeps running and reading from the same shared buffer.
+    fn reconnect_stream(&mut self, device_id: String) {
+        // Only reconnect if we have an active session
+        let (Some(buffer), Some(stop_flag)) = (self.active_buffer.as_ref(), self.stop_flag.as_ref())
+        else {
+            println!("[Engine] Reconnect ignored — no active session");
+            return;
+        };
+
+        println!("[Engine] Reconnecting to device {}", device_id);
+
+        // Stop only the audio stream, NOT the processing thread
+        if let Some(stream) = self.active_stream.take() {
+            stream.stop();
+        }
+
+        // Start a new stream with the same buffer and stop_flag
+        match self.capture_backend.start(
+            Some(device_id.clone()),
+            Arc::clone(buffer),
+            Arc::clone(stop_flag),
+        ) {
+            Ok(stream) => {
+                self.active_stream = Some(stream);
+
+                // Update session info for the watcher
+                let device_info = self
+                    .capture_backend
+                    .enumerate_devices()
+                    .ok()
+                    .and_then(|devs| devs.into_iter().find(|d| d.id == device_id));
+
+                if let Ok(mut info) = self.active_session_info.lock() {
+                    info.device_id = Some(device_id.clone());
+                    info.application_name =
+                        device_info.as_ref().and_then(|d| d.application_name.clone());
+                    info.device_type = device_info.map(|d| d.device_type);
+                }
+
+                // Notify frontend of the source change
+                let _ = self.app_handle.emit("source-switched", &device_id);
+                println!("[Engine] Reconnected to device {}", device_id);
+            }
+            Err(e) => {
+                eprintln!("[Engine] Reconnect failed: {}", e);
+                let _ = self.app_handle.emit(
+                    "transcription-error",
+                    TranscriptionPayload {
+                        text: format!("Reconnect failed: {}", e),
+                    },
+                );
             }
         }
     }

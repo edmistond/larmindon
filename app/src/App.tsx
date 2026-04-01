@@ -75,9 +75,26 @@ function App() {
       }
     );
 
+    const unlistenDevicesChanged = listen<AudioDevice[]>(
+      "devices-changed",
+      (event) => {
+        setDevices(event.payload);
+      }
+    );
+
+    // Backend switched source (e.g., active stream disappeared, fell back to default)
+    const unlistenSourceSwitched = listen<string>(
+      "source-switched",
+      (event) => {
+        setSelectedDevice(event.payload);
+      }
+    );
+
     return () => {
       unlistenTranscription.then((fn) => fn());
       unlistenError.then((fn) => fn());
+      unlistenDevicesChanged.then((fn) => fn());
+      unlistenSourceSwitched.then((fn) => fn());
     };
   }, []);
 
@@ -165,8 +182,17 @@ function App() {
 
         <select
           value={selectedDevice}
-          onChange={(e) => setSelectedDevice(e.target.value)}
-          disabled={isRunning}
+          onChange={async (e) => {
+            const newId = e.target.value;
+            setSelectedDevice(newId);
+            if (isRunning) {
+              try {
+                await invoke("switch_source", { deviceId: newId });
+              } catch (err) {
+                setError(String(err));
+              }
+            }
+          }}
         >
           {devices.length === 0 && <option value="">No devices found</option>}
           {devices.map((dev) => (

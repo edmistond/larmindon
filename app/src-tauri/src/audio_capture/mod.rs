@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::any::Any;
 use std::collections::VecDeque;
 use std::error::Error;
 use std::sync::atomic::AtomicBool;
@@ -22,6 +23,17 @@ pub struct AudioDevice {
     pub name: String,
     pub device_type: DeviceType,
     pub is_default: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub application_name: Option<String>,
+}
+
+/// Shared state describing the currently active capture session.
+/// Written by AudioEngine, read by the PipeWire watcher for reconnect logic.
+#[derive(Default)]
+pub struct ActiveSessionInfo {
+    pub device_id: Option<String>,
+    pub application_name: Option<String>,
+    pub device_type: Option<DeviceType>,
 }
 
 /// Trait for audio capture backends
@@ -44,6 +56,11 @@ pub trait AudioCapture: Send {
 
     /// Get the name of this backend
     fn name(&self) -> &'static str;
+
+    /// Downcast support for backend-specific features (e.g., PipeWire watcher)
+    fn as_any(&self) -> Option<&dyn Any> {
+        None
+    }
 }
 
 /// Trait for active audio streams
