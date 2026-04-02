@@ -44,16 +44,10 @@ function App() {
       const devs = await invoke<AudioDevice[]>("list_devices");
       setDevices(devs);
 
-      // Pick the default device (system default monitor, or first device)
+      // Pre-select the default device but don't start transcription automatically
       const defaultDev = devs.find((d) => d.is_default) ?? devs[0];
       if (defaultDev) {
         setSelectedDevice(defaultDev.id);
-        try {
-          await invoke("start_transcription", { deviceId: defaultDev.id });
-          setIsRunning(true);
-        } catch (e) {
-          setError(String(e));
-        }
       }
     }
 

@@ -17,6 +17,8 @@ impl AudioCapture for CpalBackend {
         let host = cpal::default_host();
         let mut devices = Vec::new();
 
+        let default_input_name = host.default_input_device().and_then(|d| d.name().ok());
+
         // Input devices
         if let Ok(input_devices) = host.input_devices() {
             for device in input_devices {
@@ -32,7 +34,7 @@ impl AudioCapture for CpalBackend {
                         id: raw_name.clone(),
                         name: format!("[in] {}", raw_name),
                         device_type: DeviceType::Input,
-                        is_default: false,
+                        is_default: default_input_name.as_deref() == Some(&raw_name),
                         application_name: None,
                     });
                 }
