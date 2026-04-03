@@ -84,11 +84,30 @@ function App() {
       }
     );
 
+    const unlistenClearTranscript = listen("clear-transcript", () => {
+      setTranscript("");
+    });
+
+    const unlistenCopyTranscript = listen("copy-transcript", () => {
+      // transcript state isn't accessible here due to closure, so read from DOM
+      const el = document.querySelector(".transcript");
+      if (el?.textContent) {
+        navigator.clipboard.writeText(el.textContent);
+      }
+    });
+
+    const unlistenOpenPreferences = listen("open-preferences", () => {
+      openPreferences();
+    });
+
     return () => {
       unlistenTranscription.then((fn) => fn());
       unlistenError.then((fn) => fn());
       unlistenDevicesChanged.then((fn) => fn());
       unlistenSourceSwitched.then((fn) => fn());
+      unlistenClearTranscript.then((fn) => fn());
+      unlistenCopyTranscript.then((fn) => fn());
+      unlistenOpenPreferences.then((fn) => fn());
     };
   }, []);
 

@@ -10,6 +10,7 @@ use settings::Settings;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
+use tauri::menu::{Menu, MenuItem, MenuEvent, SubmenuBuilder};
 use tauri::{Emitter, Manager, State};
 
 struct AudioEngineHandle {
@@ -174,7 +175,58 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .on_menu_event(|app, event: MenuEvent| {
+            match event.id().as_ref() {
+                "clear_transcript" => { let _ = app.emit("clear-transcript", ()); }
+                "copy_transcript" => { let _ = app.emit("copy-transcript", ()); }
+                "preferences" => { let _ = app.emit("open-preferences", ()); }
+                _ => {}
+            }
+        })
         .setup(|app| {
+            // Build menu bar with Edit submenu
+            let handle = app.handle();
+            let copy_transcript_item = MenuItem::with_id(
+                handle,
+                "copy_transcript",
+                "Copy Transcript to Clipboard",
+                true,
+                Some("CmdOrCtrl+Shift+C"),
+            )?;
+            let clear_item = MenuItem::with_id(
+                handle,
+                "clear_transcript",
+                "Clear Transcript",
+                true,
+                Some("CmdOrCtrl+K"),
+            )?;
+            let preferences_item = MenuItem::with_id(
+                handle,
+                "preferences",
+                "Preferences…",
+                true,
+                Some("CmdOrCtrl+,"),
+            )?;
+            let app_menu = SubmenuBuilder::new(handle, "Larmindon")
+                .about(None)
+                .separator()
+                .hide()
+                .hide_others()
+                .show_all()
+                .separator()
+                .quit()
+                .build()?;
+            let edit_menu = SubmenuBuilder::new(handle, "Edit")
+                .select_all()
+                .copy()
+                .separator()
+                .item(&copy_transcript_item)
+                .item(&clear_item)
+                .separator()
+                .item(&preferences_item)
+                .build()?;
+            let menu = Menu::with_items(handle, &[&app_menu, &edit_menu])?;
+            app.set_menu(menu)?;
             // Load settings: file -> env overrides
             let settings = Settings::load().with_env_overrides();
             println!(
