@@ -10,7 +10,7 @@ use settings::Settings;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use tauri::menu::{Menu, MenuItem, MenuEvent, SubmenuBuilder};
+use tauri::menu::{Menu, MenuEvent, MenuItem, SubmenuBuilder};
 use tauri::{Emitter, Manager, State};
 
 struct AudioEngineHandle {
@@ -39,7 +39,10 @@ fn start_transcription(
     let handle = engine.lock().map_err(|e| e.to_string())?;
     handle
         .cmd_tx
-        .send(Command::Start { device_id, settings })
+        .send(Command::Start {
+            device_id,
+            settings,
+        })
         .map_err(|e| e.to_string())
 }
 
@@ -83,6 +86,16 @@ fn save_settings(
 #[tauri::command]
 fn get_default_settings() -> Settings {
     Settings::default()
+}
+
+#[tauri::command]
+fn get_system_theme() -> String {
+    // Use dark-light crate to detect system theme
+    match dark_light::detect() {
+        Ok(dark_light::Mode::Dark) => "dark".to_string(),
+        Ok(dark_light::Mode::Light) => "light".to_string(),
+        _ => "dark".to_string(),
+    }
 }
 
 /// Create the appropriate audio capture backend based on platform and features
@@ -175,13 +188,17 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .on_menu_event(|app, event: MenuEvent| {
-            match event.id().as_ref() {
-                "clear_transcript" => { let _ = app.emit("clear-transcript", ()); }
-                "copy_transcript" => { let _ = app.emit("copy-transcript", ()); }
-                "preferences" => { let _ = app.emit("open-preferences", ()); }
-                _ => {}
+        .on_menu_event(|app, event: MenuEvent| match event.id().as_ref() {
+            "clear_transcript" => {
+                let _ = app.emit("clear-transcript", ());
             }
+            "copy_transcript" => {
+                let _ = app.emit("copy-transcript", ());
+            }
+            "preferences" => {
+                let _ = app.emit("open-preferences", ());
+            }
+            _ => {}
         })
         .setup(|app| {
             // Build menu bar with Edit submenu
@@ -258,9 +275,7 @@ pub fn run() {
                 let watcher_session_info = active_session_info.clone();
                 let watcher_devices_cache = capture_backend
                     .as_any()
-                    .and_then(|a| {
-                        a.downcast_ref::<audio_capture::pipewire::PipewireBackend>()
-                    })
+                    .and_then(|a| a.downcast_ref::<audio_capture::pipewire::PipewireBackend>())
                     .map(|pw| pw.last_devices.clone());
 
                 if let Some(devices_cache) = watcher_devices_cache {
@@ -272,7 +287,9 @@ pub fn run() {
                     );
                     app.manage(Mutex::new(watcher));
                 } else {
-                    eprintln!("Warning: Could not downcast audio backend to PipewireBackend for watcher");
+                    eprintln!(
+                        "Warning: Could not downcast audio backend to PipewireBackend for watcher"
+                    );
                 }
             }
 
@@ -298,8 +315,8 @@ pub fn run() {
             get_settings,
             save_settings,
             get_default_settings,
+            get_system_theme,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
-

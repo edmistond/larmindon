@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 const VALID_CHUNK_MS: &[usize] = &[80, 160, 560, 1120];
+const VALID_THEMES: &[&str] = &["light", "dark", "system"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -16,6 +17,8 @@ pub struct Settings {
     pub font_family: String,
     /// Font size in px for transcript display. 0 = use default.
     pub font_size_px: u32,
+    /// Theme mode: "light", "dark", or "system"
+    pub theme_mode: String,
 }
 
 impl Default for Settings {
@@ -29,6 +32,7 @@ impl Default for Settings {
             empty_reset_threshold: 6,
             font_family: String::new(),
             font_size_px: 0,
+            theme_mode: "dark".to_string(),
         }
     }
 }
@@ -67,10 +71,7 @@ impl Settings {
                 }
             },
             Err(_) => {
-                println!(
-                    "No settings file at {}, using defaults.",
-                    path.display()
-                );
+                println!("No settings file at {}, using defaults.", path.display());
                 Self::default()
             }
         }
@@ -144,9 +145,7 @@ impl Settings {
                     self.punctuation_reset = false;
                 }
                 "1" | "true" | "yes" => {
-                    println!(
-                        "Punctuation-based decoder reset ENABLED via PUNCTUATION_RESET={val}"
-                    );
+                    println!("Punctuation-based decoder reset ENABLED via PUNCTUATION_RESET={val}");
                     self.punctuation_reset = true;
                 }
                 _ => eprintln!("Unknown PUNCTUATION_RESET={val:?}, keeping saved value."),
@@ -176,14 +175,17 @@ impl Settings {
         if self.model_path.trim().is_empty() {
             return Err("model_path cannot be empty".to_string());
         }
+        if !VALID_THEMES.contains(&self.theme_mode.as_str()) {
+            return Err(format!(
+                "Invalid theme_mode '{}'; must be one of {:?}",
+                self.theme_mode, VALID_THEMES
+            ));
+        }
 
         // Warn (but don't error) if model path doesn't exist
         let expanded = expand_tilde(&self.model_path);
         if !expanded.exists() {
-            eprintln!(
-                "Warning: model path {} does not exist",
-                expanded.display()
-            );
+            eprintln!("Warning: model path {} does not exist", expanded.display());
         }
 
         Ok(())

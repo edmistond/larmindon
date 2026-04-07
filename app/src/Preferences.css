@@ -3,8 +3,41 @@
     font-size: 16px;
     line-height: 24px;
     font-weight: 400;
-    color: #e0e0e0;
-    background-color: #2a2a2a;
+
+    /* CSS variables for theming - Dark mode (default) */
+    --color-text: #e0e0e0;
+    --color-text-secondary: #bbb;
+    --color-text-muted: #999;
+    --color-text-placeholder: #777;
+    --color-bg: #2a2a2a;
+    --color-surface: #383838;
+    --color-surface-secondary: #1e1e1e;
+    --color-border: #555;
+    --color-border-hover: #888;
+    --color-accent-green: #388e3c;
+    --color-accent-green-hover: #1b5e20;
+    --color-accent-green-light: #66bb6a;
+    --color-error: #ef5350;
+
+    color: var(--color-text);
+    background-color: var(--color-bg);
+}
+
+/* Light mode overrides */
+[data-theme="light"] {
+    --color-text: #1a1a1a;
+    --color-text-secondary: #666;
+    --color-text-muted: #888;
+    --color-text-placeholder: #999;
+    --color-bg: #f5f5f5;
+    --color-surface: #ffffff;
+    --color-surface-secondary: #f0f0f0;
+    --color-border: #ccc;
+    --color-border-hover: #999;
+    --color-accent-green: #4caf50;
+    --color-accent-green-hover: #388e3c;
+    --color-accent-green-light: #66bb6a;
+    --color-error: #d32f2f;
 }
 
 .prefs-container {
@@ -29,7 +62,7 @@
     flex-direction: column;
     gap: 0.3rem;
     font-size: 0.9em;
-    color: #bbb;
+    color: var(--color-text-secondary);
 }
 
 .prefs-row {
@@ -40,18 +73,18 @@
 .prefs-input,
 .prefs-select {
     border-radius: 6px;
-    border: 1px solid #555;
+    border: 1px solid var(--color-border);
     padding: 0.5em 0.8em;
     font-size: 1em;
     font-family: inherit;
-    color: #e0e0e0;
-    background-color: #383838;
+    color: var(--color-text);
+    background-color: var(--color-surface);
     outline: none;
 }
 
 .prefs-input:focus,
 .prefs-select:focus {
-    border-color: #888;
+    border-color: var(--color-border-hover);
 }
 
 .prefs-input-wide {
@@ -76,7 +109,7 @@
 .prefs-checkbox-label input[type="checkbox"] {
     width: 1.1em;
     height: 1.1em;
-    accent-color: #388e3c;
+    accent-color: var(--color-accent-green);
 }
 
 .prefs-browse-btn {
@@ -85,31 +118,31 @@
     padding: 0.5em 0.8em;
     font-size: 0.9em;
     font-family: inherit;
-    color: #ccc;
-    background-color: #555;
+    color: var(--color-text);
+    background-color: var(--color-surface);
     cursor: pointer;
     white-space: nowrap;
 }
 
 .prefs-browse-btn:hover {
-    border-color: #888;
+    border-color: var(--color-border-hover);
 }
 
 .prefs-note {
     margin: 1rem 0 0.3rem 0;
     font-size: 0.85em;
-    color: #999;
+    color: var(--color-text-muted);
     font-style: italic;
 }
 
 .prefs-error {
-    color: #ef5350;
+    color: var(--color-error);
     margin: 0.3rem 0;
     font-size: 0.9em;
 }
 
 .prefs-saved {
-    color: #66bb6a;
+    color: var(--color-accent-green-light);
     margin: 0.3rem 0;
     font-size: 0.9em;
 }
@@ -120,7 +153,7 @@
     align-items: center;
     margin-top: 1rem;
     padding-top: 1rem;
-    border-top: 1px solid #444;
+    border-top: 1px solid var(--color-border);
 }
 
 .prefs-actions-right {
@@ -140,12 +173,12 @@
 }
 
 .prefs-btn-save {
-    background-color: #388e3c;
+    background-color: var(--color-accent-green);
     color: #fff;
 }
 
 .prefs-btn-save:hover {
-    border-color: #1b5e20;
+    border-color: var(--color-accent-green-hover);
 }
 
 .prefs-btn-save:disabled {
@@ -154,21 +187,21 @@
 }
 
 .prefs-btn-cancel {
-    background-color: #555;
-    color: #ccc;
+    background-color: var(--color-surface);
+    color: var(--color-text);
 }
 
 .prefs-btn-cancel:hover {
-    border-color: #888;
+    border-color: var(--color-border-hover);
 }
 
 .prefs-btn-reset {
     background-color: transparent;
-    color: #999;
-    border: 1px solid #555;
+    color: var(--color-text-muted);
+    border: 1px solid var(--color-border);
 }
 
 .prefs-btn-reset:hover {
-    border-color: #888;
-    color: #ccc;
+    border-color: var(--color-border-hover);
+    color: var(--color-text);
 }

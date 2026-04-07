@@ -97,7 +97,10 @@ impl AudioEngine {
                     };
                     let _ = reply.send(devices);
                 }
-                Command::Start { device_id, settings } => {
+                Command::Start {
+                    device_id,
+                    settings,
+                } => {
                     self.stop_active_session();
                     if let Err(e) = self.start_session(device_id, settings) {
                         eprintln!("Failed to start transcription: {}", e);
@@ -201,7 +204,9 @@ impl AudioEngine {
         // Update shared session info for the watcher
         if let Ok(mut info) = self.active_session_info.lock() {
             info.device_id = device_id;
-            info.application_name = device_info.as_ref().and_then(|d| d.application_name.clone());
+            info.application_name = device_info
+                .as_ref()
+                .and_then(|d| d.application_name.clone());
             info.device_type = device_info.map(|d| d.device_type);
         }
 
@@ -234,7 +239,8 @@ impl AudioEngine {
     /// The processing loop keeps running and reading from the same shared buffer.
     fn reconnect_stream(&mut self, device_id: String) {
         // Only reconnect if we have an active session
-        let (Some(buffer), Some(stop_flag)) = (self.active_buffer.as_ref(), self.stop_flag.as_ref())
+        let (Some(buffer), Some(stop_flag)) =
+            (self.active_buffer.as_ref(), self.stop_flag.as_ref())
         else {
             println!("[Engine] Reconnect ignored — no active session");
             return;
@@ -265,8 +271,9 @@ impl AudioEngine {
 
                 if let Ok(mut info) = self.active_session_info.lock() {
                     info.device_id = Some(device_id.clone());
-                    info.application_name =
-                        device_info.as_ref().and_then(|d| d.application_name.clone());
+                    info.application_name = device_info
+                        .as_ref()
+                        .and_then(|d| d.application_name.clone());
                     info.device_type = device_info.map(|d| d.device_type);
                 }
 
@@ -691,4 +698,3 @@ fn ends_with_sentence_punctuation(text: &str) -> bool {
         _ => false,
     }
 }
-

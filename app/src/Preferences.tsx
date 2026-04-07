@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import "./Preferences.css";
@@ -13,9 +14,15 @@ interface Settings {
   empty_reset_threshold: number;
   font_family: string;
   font_size_px: number;
+  theme_mode: string;
 }
 
 const VALID_CHUNK_MS = [80, 160, 560, 1120];
+const THEME_OPTIONS = [
+  { value: "dark", label: "Dark" },
+  { value: "light", label: "Light" },
+  { value: "system", label: "System" },
+];
 
 function Preferences() {
   const [settings, setSettings] = useState<Settings | null>(null);
@@ -25,12 +32,36 @@ function Preferences() {
 
   useEffect(() => {
     loadSettings();
+
+    // Listen for settings changes from other windows
+    const unlisten = listen<Settings>("settings-changed", async (event) => {
+      setSettings(event.payload);
+      await applyTheme(event.payload.theme_mode);
+    });
+
+    return () => {
+      unlisten.then((fn) => fn());
+    };
   }, []);
+
+  async function applyTheme(themeMode: string) {
+    let effectiveTheme = themeMode;
+    
+    if (themeMode === "system") {
+      // Detect system theme via media query (frontend)
+      const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+      effectiveTheme = prefersDark ? "dark" : "light";
+    }
+    
+    // Apply theme to document
+    document.documentElement.setAttribute("data-theme", effectiveTheme);
+  }
 
   async function loadSettings() {
     try {
       const s = await invoke<Settings>("get_settings");
       setSettings(s);
+      await applyTheme(s.theme_mode);
       setError("");
     } catch (e) {
       setError(String(e));
@@ -44,6 +75,7 @@ function Preferences() {
     setSaved(false);
     try {
       await invoke("save_settings", { newSettings: settings });
+      await applyTheme(settings.theme_mode);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (e) {
@@ -93,6 +125,21 @@ function Preferences() {
       <h2>Preferences</h2>
 
       <div className="prefs-form">
+        <label className="prefs-label">
+          Theme
+          <select
+            value={settings.theme_mode}
+            onChange={(e) => update("theme_mode", e.target.value)}
+            className="prefs-select"
+          >
+            {THEME_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
         <label className="prefs-label">
           Model Path
           <div className="prefs-row">

@@ -249,14 +249,10 @@ fn stream_thread_func(
                             guard.extend(mono.iter());
                         }
                     } else {
-                        println!(
-                            "[PipeWire] Unsupported stride: {} (size={})",
-                            stride, size
-                        );
+                        println!("[PipeWire] Unsupported stride: {} (size={})", stride, size);
                     }
                 }
             }
-
         })
         .register()?;
 
@@ -269,13 +265,11 @@ fn stream_thread_func(
         id: ParamType::EnumFormat.as_raw(),
         properties: audio_info.into(),
     };
-    let values: Vec<u8> = PodSerializer::serialize(
-        std::io::Cursor::new(Vec::new()),
-        &Value::Object(obj),
-    )
-    .unwrap()
-    .0
-    .into_inner();
+    let values: Vec<u8> =
+        PodSerializer::serialize(std::io::Cursor::new(Vec::new()), &Value::Object(obj))
+            .unwrap()
+            .0
+            .into_inner();
     let mut params = [Pod::from_bytes(&values).unwrap()];
 
     // Connect with AUTOCONNECT + MAP_BUFFERS + RT_PROCESS (required for process callback)
@@ -287,7 +281,10 @@ fn stream_thread_func(
         &mut params,
     )?;
 
-    println!("[PipeWire] Stream connected, targeting node {}", target_node_id);
+    println!(
+        "[PipeWire] Stream connected, targeting node {}",
+        target_node_id
+    );
 
     // Run the mainloop with periodic stop checks
     let mainloop_ptr = &mainloop as *const MainLoopBox as usize;
@@ -464,10 +461,7 @@ fn enumerate_devices_thread() -> Result<Vec<AudioDevice>, String> {
                                     // Value is JSON like {"name":"alsa_output.pci-..."}
                                     // Parse the name field
                                     if let Some(name) = parse_metadata_name(val) {
-                                        println!(
-                                            "[PipeWire] Default audio sink: {}",
-                                            name
-                                        );
+                                        println!("[PipeWire] Default audio sink: {}", name);
                                         *dsn.lock().unwrap() = Some(name);
                                     }
                                 }

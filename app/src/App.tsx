@@ -10,9 +10,10 @@ interface AudioDevice {
   is_default: boolean;
 }
 
-interface FontSettings {
+interface Settings {
   font_family: string;
   font_size_px: number;
+  theme_mode: string;
 }
 
 function App() {
@@ -22,9 +23,10 @@ function App() {
   const [transcript, setTranscript] = useState("");
   const [error, setError] = useState("");
   const transcriptRef = useRef<HTMLDivElement>(null);
-  const [fontSettings, setFontSettings] = useState<FontSettings>({
+  const [fontSettings, setFontSettings] = useState<Settings>({
     font_family: "",
     font_size_px: 0,
+    theme_mode: "dark",
   });
 
   async function refreshDevices() {
@@ -111,22 +113,69 @@ function App() {
     };
   }, []);
 
-  useEffect(() => {
-    invoke<FontSettings>("get_settings").then((s) =>
-      setFontSettings({ font_family: s.font_family, font_size_px: s.font_size_px }),
-    );
+  async function applyTheme(themeMode: string) {
+    let effectiveTheme = themeMode;
+    
+    if (themeMode === "system") {
+      // Detect system theme
+      const systemTheme = await invoke<string>("get_system_theme");
+      effectiveTheme = systemTheme;
+    }
+    
+    // Apply theme to document
+    document.documentElement.setAttribute("data-theme", effectiveTheme);
+  }
 
-    const unlistenSettings = listen<FontSettings>("settings-changed", (event) => {
+  useEffect(() => {
+    async function initTheme() {
+      const s = await invoke<Settings>("get_settings");
+      setFontSettings({
+        font_family: s.font_family,
+        font_size_px: s.font_size_px,
+        theme_mode: s.theme_mode,
+      });
+      await applyTheme(s.theme_mode);
+    }
+
+    initTheme();
+
+    const unlistenSettings = listen<Settings>("settings-changed", async (event) => {
       setFontSettings({
         font_family: event.payload.font_family,
         font_size_px: event.payload.font_size_px,
+        theme_mode: event.payload.theme_mode,
       });
+      await applyTheme(event.payload.theme_mode);
     });
 
     return () => {
       unlistenSettings.then((fn) => fn());
     };
   }, []);
+
+  // Listen for system theme changes when in "system" mode
+  useEffect(() => {
+    if (fontSettings.theme_mode !== "system") {
+      return;
+    }
+
+    const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+    
+    function handleChange() {
+      const newTheme = mediaQuery.matches ? "dark" : "light";
+      document.documentElement.setAttribute("data-theme", newTheme);
+    }
+
+    // Apply initial system theme
+    handleChange();
+
+    // Listen for changes
+    mediaQuery.addEventListener("change", handleChange);
+
+    return () => {
+      mediaQuery.removeEventListener("change", handleChange);
+    };
+  }, [fontSettings.theme_mode]);
 
   useEffect(() => {
     if (transcriptRef.current) {
