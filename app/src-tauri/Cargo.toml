@@ -34,6 +34,14 @@ ndarray = "0.17"
 [target.'cfg(target_os = "linux")'.dependencies]
 pipewire = { version = "0.9", optional = true }
 libspa = { version = "0.9", optional = true }
+fontconfig = { version = "0.8", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+core-text = "21"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.58", features = ["Win32_Graphics_DirectWrite"] }
 
 [features]
 default = ["cpal", "pipewire"]
@@ -42,4 +50,5 @@ directml = ["parakeet-rs/directml"]
 migraphx = ["parakeet-rs/migraphx"]
 pipewire = ["dep:pipewire", "dep:libspa"]
 cpal = ["dep:cpal"]
+fontconfig = ["dep:fontconfig"]
 

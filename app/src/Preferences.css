@@ -205,3 +205,31 @@
     border-color: var(--color-border-hover);
     color: var(--color-text);
 }
+
+/* Font picker styles */
+.font-picker {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+}
+
+.font-filter {
+    width: 100%;
+}
+
+.font-select {
+    width: 100%;
+    height: auto;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.font-select option {
+    padding: 0.3em 0.5em;
+}
+
+.font-loading {
+    font-size: 0.85em;
+    color: var(--color-text-muted);
+    font-style: italic;
+}

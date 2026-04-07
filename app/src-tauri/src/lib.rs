@@ -1,6 +1,7 @@
 mod audio_capture;
 mod audio_config;
 mod audio_engine;
+mod font_enumeration;
 mod settings;
 mod vad;
 
@@ -98,7 +99,10 @@ fn get_system_theme() -> String {
     }
 }
 
-/// Create the appropriate audio capture backend based on platform and features
+#[tauri::command]
+fn get_system_fonts() -> Vec<String> {
+    font_enumeration::get_system_fonts()
+}
 fn create_audio_backend() -> Box<dyn audio_capture::AudioCapture> {
     // Check for environment override first
     if let Ok(backend) = std::env::var("LARMINDON_AUDIO_BACKEND") {
@@ -316,6 +320,7 @@ pub fn run() {
             save_settings,
             get_default_settings,
             get_system_theme,
+            get_system_fonts,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

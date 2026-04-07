@@ -29,9 +29,13 @@ function Preferences() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
+  const [availableFonts, setAvailableFonts] = useState<string[]>([]);
+  const [fontFilter, setFontFilter] = useState("");
+  const [isLoadingFonts, setIsLoadingFonts] = useState(true);
 
   useEffect(() => {
     loadSettings();
+    loadFonts();
 
     // Listen for settings changes from other windows
     const unlisten = listen<Settings>("settings-changed", async (event) => {
@@ -44,6 +48,20 @@ function Preferences() {
       unlisten.then((fn) => fn());
     };
   }, []);
+
+  async function loadFonts() {
+    setIsLoadingFonts(true);
+    try {
+      const fonts = await invoke<string[]>("get_system_fonts");
+      setAvailableFonts(fonts);
+    } catch (e) {
+      console.error("Failed to load fonts:", e);
+      // Fallback to a minimal set if the backend fails
+      setAvailableFonts(["Arial", "Helvetica", "Times New Roman", "Courier New", "Georgia", "Verdana"]);
+    } finally {
+      setIsLoadingFonts(false);
+    }
+  }
 
   async function applyTheme(themeMode: string) {
     let effectiveTheme = themeMode;
@@ -120,6 +138,13 @@ function Preferences() {
     setSettings((s) => (s ? { ...s, [key]: value } : s));
     setSaved(false);
   }
+
+  // Filter fonts based on search input
+  const filteredFonts = fontFilter.trim() === ""
+    ? availableFonts
+    : availableFonts.filter(font =>
+        font.toLowerCase().includes(fontFilter.toLowerCase())
+      );
 
   if (!settings) {
     return <div className="prefs-container">Loading...</div>;
@@ -230,13 +255,35 @@ function Preferences() {
         </label>
         <label className="prefs-label">
           Transcript Font
-          <input
-            type="text"
-            value={settings.font_family}
-            onChange={(e) => update("font_family", e.target.value)}
-            placeholder="Default system font"
-            className="prefs-input"
-          />
+          <div className="font-picker">
+            <input
+              type="text"
+              value={fontFilter}
+              onChange={(e) => setFontFilter(e.target.value)}
+              placeholder="Search fonts..."
+              className="prefs-input font-filter"
+              disabled={isLoadingFonts}
+            />
+            <select
+              value={settings.font_family}
+              onChange={(e) => update("font_family", e.target.value)}
+              className="prefs-select font-select"
+              size={Math.min(8, filteredFonts.length + 1)}
+              disabled={isLoadingFonts}
+            >
+              <option value="">Default system font</option>
+              {filteredFonts.map((font) => (
+                <option 
+                  key={font} 
+                  value={font}
+                  style={{ fontFamily: font }}
+                >
+                  {font}
+                </option>
+              ))}
+            </select>
+            {isLoadingFonts && <span className="font-loading">Loading fonts...</span>}
+          </div>
         </label>
 
         <label className="prefs-label">
