@@ -36,6 +36,7 @@ function Preferences() {
     // Listen for settings changes from other windows
     const unlisten = listen<Settings>("settings-changed", async (event) => {
       setSettings(event.payload);
+      localStorage.setItem('larmindon_settings', JSON.stringify(event.payload));
       await applyTheme(event.payload.theme_mode);
     });
 
@@ -61,6 +62,8 @@ function Preferences() {
     try {
       const s = await invoke<Settings>("get_settings");
       setSettings(s);
+      // Cache settings for immediate access on next load
+      localStorage.setItem('larmindon_settings', JSON.stringify(s));
       await applyTheme(s.theme_mode);
       setError("");
     } catch (e) {
@@ -75,6 +78,8 @@ function Preferences() {
     setSaved(false);
     try {
       await invoke("save_settings", { newSettings: settings });
+      // Also save to localStorage for immediate access on next load
+      localStorage.setItem('larmindon_settings', JSON.stringify(settings));
       await applyTheme(settings.theme_mode);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);

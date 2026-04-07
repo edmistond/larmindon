@@ -134,6 +134,8 @@ function App() {
         font_size_px: s.font_size_px,
         theme_mode: s.theme_mode,
       });
+      // Cache settings for immediate access
+      localStorage.setItem('larmindon_settings', JSON.stringify(s));
       await applyTheme(s.theme_mode);
     }
 
@@ -145,6 +147,8 @@ function App() {
         font_size_px: event.payload.font_size_px,
         theme_mode: event.payload.theme_mode,
       });
+      // Cache settings for immediate access
+      localStorage.setItem('larmindon_settings', JSON.stringify(event.payload));
       await applyTheme(event.payload.theme_mode);
     });
 
