@@ -38,7 +38,6 @@ pub enum Command {
     Reconnect {
         device_id: String,
     },
-    Shutdown,
 }
 
 pub struct AudioEngine {
@@ -117,10 +116,6 @@ impl AudioEngine {
                 }
                 Command::Reconnect { device_id } => {
                     self.reconnect_stream(device_id);
-                }
-                Command::Shutdown => {
-                    self.stop_active_session();
-                    break;
                 }
             }
         }

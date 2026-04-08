@@ -1,5 +1,4 @@
 mod audio_capture;
-mod audio_config;
 mod audio_engine;
 mod font_enumeration;
 mod settings;
@@ -182,10 +181,6 @@ fn test_pipewire_available() -> Result<bool, Box<dyn std::error::Error>> {
     result
 }
 
-#[cfg(not(all(target_os = "linux", feature = "pipewire")))]
-fn test_pipewire_available() -> Result<bool, Box<dyn std::error::Error>> {
-    Ok(false)
-}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {

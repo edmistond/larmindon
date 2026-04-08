@@ -7,9 +7,6 @@ const VAD_SAMPLE_RATE: u32 = 16_000;
 const VAD_CHUNK_SIZE: usize = 512;
 const VAD_CONTEXT_SIZE: usize = 64;
 
-/// Default pre-speech ring buffer: 500ms at 16kHz.
-const DEFAULT_PRE_SPEECH_SAMPLES: usize = 8000;
-
 // ---------------------------------------------------------------------------
 // Silero VAD model wrapper (v5, opset 16)
 // ---------------------------------------------------------------------------
@@ -139,9 +136,6 @@ impl PreSpeechRingBuffer {
         out
     }
 
-    pub fn len(&self) -> usize {
-        self.len
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -205,10 +199,6 @@ impl VadProcessor {
         self.state
     }
 
-    pub fn pre_speech_buffer_len(&self) -> usize {
-        self.ring_buffer.len()
-    }
-
     /// Process a single 512-sample frame. Returns the decision and the speech probability.
     pub fn process_frame(
         &mut self,
@@ -265,11 +255,4 @@ impl VadProcessor {
         Ok((decision, prob))
     }
 
-    /// Reset the VAD to silence state (e.g., after a mid-speech Nemotron reset).
-    pub fn reset_to_silence(&mut self) {
-        self.state = VadState::Silence;
-        self.speech_frame_count = 0;
-        self.silence_frame_count = 0;
-        self.model.reset();
-    }
 }

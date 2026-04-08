@@ -8,7 +8,8 @@ use std::sync::{Arc, Mutex};
 /// Device type for UI organization
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub enum DeviceType {
-    /// Per-application audio capture (highest priority)
+    /// Per-application audio capture (highest priority, PipeWire only)
+    #[allow(dead_code)]
     Application,
     /// Physical input devices (microphones)
     Input,
@@ -58,6 +59,7 @@ pub trait AudioCapture: Send {
     fn name(&self) -> &'static str;
 
     /// Downcast support for backend-specific features (e.g., PipeWire watcher)
+    #[allow(dead_code)]
     fn as_any(&self) -> Option<&dyn Any> {
         None
     }

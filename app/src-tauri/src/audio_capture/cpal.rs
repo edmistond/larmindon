@@ -17,19 +17,19 @@ impl AudioCapture for CpalBackend {
         let host = cpal::default_host();
         let mut devices = Vec::new();
 
-        let default_input_name = host.default_input_device().and_then(|d| d.name().ok());
+        let default_input_name = host
+            .default_input_device()
+            .and_then(|d| d.description().ok().map(|desc| desc.name().to_string()));
 
         // Input devices
         if let Ok(input_devices) = host.input_devices() {
             for device in input_devices {
                 let raw_name = device
-                    .name()
+                    .description()
+                    .map(|d| d.name().to_string())
                     .map_err(|e| format!("Failed to get device name: {}", e))?;
-                let id = device
-                    .name()
-                    .map_err(|e| format!("Failed to get device id: {}", e))?;
 
-                if !id.is_empty() {
+                if !raw_name.is_empty() {
                     devices.push(AudioDevice {
                         id: raw_name.clone(),
                         name: format!("[in] {}", raw_name),
@@ -46,13 +46,11 @@ impl AudioCapture for CpalBackend {
         if let Ok(output_devices) = host.output_devices() {
             for device in output_devices {
                 let raw_name = device
-                    .name()
+                    .description()
+                    .map(|d| d.name().to_string())
                     .map_err(|e| format!("Failed to get device name: {}", e))?;
-                let id = device
-                    .name()
-                    .map_err(|e| format!("Failed to get device id: {}", e))?;
 
-                if !id.is_empty() {
+                if !raw_name.is_empty() {
                     devices.push(AudioDevice {
                         id: raw_name.clone(),
                         name: format!("[out] {}", raw_name),
@@ -76,7 +74,8 @@ impl AudioCapture for CpalBackend {
         let host = cpal::default_host();
 
         let device = if let Some(ref id) = device_id {
-            let find_by_id = |d: &Device| d.name().map(|name| name == *id).unwrap_or(false);
+            let find_by_id =
+                |d: &Device| d.description().map(|desc| desc.name() == *id).unwrap_or(false);
 
             host.input_devices()?
                 .find(find_by_id)
@@ -88,7 +87,8 @@ impl AudioCapture for CpalBackend {
         };
 
         let device_name = device
-            .name()
+            .description()
+            .map(|d| d.name().to_string())
             .map_err(|e| format!("Failed to get device name: {}", e))?;
         println!("CPAL: Using device: {}", device_name);
 
@@ -116,6 +116,7 @@ impl AudioCapture for CpalBackend {
 }
 
 struct CpalStream {
+    #[allow(dead_code)] // kept alive to prevent stream drop
     stream: Stream,
     stop_flag: Arc<AtomicBool>,
 }
