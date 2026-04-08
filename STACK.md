@@ -13,4 +13,4 @@
 ## Transcription
 
 - **parakeet-rs** — speech-to-text
-- **silero-vad-rust** — voice activity detection
+- **VAD** — based on silero-vad: voice activity detection (via ONNX Runtime / `ort` + `ndarray`)

@@ -10,7 +10,7 @@ A real-time captioning desktop app built with Tauri, React, and [parakeet-rs](ht
 
 Larmindon captures audio from an input device, resamples it to 16kHz, and feeds it to the Nemotron streaming speech recognition model. Transcribed text appears in real time in a scrolling text area.
 
-The audio pipeline runs on a dedicated OS thread, communicating with the Tauri frontend via channels and events. This architecture is designed to accommodate future PipeWire integration on Linux.
+The audio pipeline runs on a dedicated OS thread, communicating with the Tauri frontend via channels and events. Audio capture is abstracted behind an `AudioCapture` trait; CPAL is used on macOS/Windows, and PipeWire is the default on Linux (with CPAL as a fallback).
 
 ### Architecture
 
@@ -30,7 +30,7 @@ graph TB
     end
 
     subgraph Session ["Session (per start_transcription)"]
-        subgraph CPAL ["CPAL Audio Callback Thread"]
+        subgraph Capture ["Audio Capture Thread<br/>(CPAL or PipeWire)"]
             CAPTURE["Audio capture<br/>Downmix to mono f32"]
         end
 
@@ -75,7 +75,7 @@ graph TB
     style Tauri fill:#fff3e0
     style Engine fill:#fff3e0
     style Session fill:#f3e5f5
-    style CPAL fill:#fce4ec
+    style Capture fill:#fce4ec
     style Processing fill:#e8f5e9
     style Diagnostics fill:#f5f5f5
 ```
@@ -85,7 +85,7 @@ graph TB
 - **Commands** flow down: React `invoke()` → Tauri command handler → `mpsc` channel → Engine thread
 - **Events** flow up: Processing thread → `app_handle.emit()` → React event listener
 - **Audio** flows through a shared lock-free-ish buffer: CPAL callback pushes, processing thread drains
-- **Decoder resets** happen at three points: speech end (VAD), sentence punctuation (`. ? !`), or stuck-state heuristic (6 consecutive empty chunks)
+- **Decoder resets** happen at three points: speech end (VAD), sentence punctuation (`. ? !`), or stuck-state heuristic (configurable, default 6 consecutive empty chunks)
 - **All threads are OS threads** — no async runtime (tokio, etc.)
 
 #### Interactive visualization
@@ -94,7 +94,7 @@ An animated browser-based visualization of the pipeline is available in [`visual
 
 ## Prerequisites
 
-- [Nemotron streaming model files](https://huggingface.co/altunenes/parakeet-rs/tree/main/nemotron-speech-streaming-en-0.6b) downloaded locally
+- **Nemotron streaming model files** downloaded locally (set the model path via Preferences: Cmd/Ctrl+, or the ⚙️ button)
 - Node.js and npm
 - Rust toolchain
 - Tauri v2 prerequisites ([see Tauri docs](https://v2.tauri.app/start/prerequisites/))
@@ -129,7 +129,7 @@ However, I've not seen it actually using the GPU in practice, unfortunately.
 
 ### Chunk size
 
-Nemotron supports chunk sizes of 80ms, 160ms, 560ms, and 1120ms. The default is 560ms. Smaller chunks give lower latency; larger chunks provide more context per inference call but may struggle to keep up in real time. Set the `CHUNK_MS` environment variable to experiment:
+Nemotron supports chunk sizes of 80ms, 160ms, 560ms, and 1120ms. The default is 560ms. Smaller chunks give lower latency; larger chunks provide more context per inference call but may struggle to keep up in real time. Configure via the Preferences window, or set the `CHUNK_MS` environment variable to experiment:
 
 ```sh
 CHUNK_MS=160 npm run tauri dev
@@ -139,7 +139,7 @@ CHUNK_MS=160 npm run tauri dev
 
 By default, Nemotron's ONNX Runtime sessions use 2 intra-op threads and 1 inter-op thread. Intra-op threads control parallelism *within* individual operations (e.g., matrix multiplications), while inter-op threads control parallelism *between* independent graph nodes.
 
-Reducing intra-op threads lowers total CPU usage at the cost of slightly higher per-call inference latency. Since inference typically completes well within the chunk window (e.g., ~64ms for a 560ms chunk), there is significant headroom to trade threads for efficiency.
+Reducing intra-op threads lowers total CPU usage at the cost of slightly higher per-call inference latency. Since inference typically completes well within the chunk window (e.g., ~64ms for a 560ms chunk), there is significant headroom to trade threads for efficiency. These can be configured via the Preferences window, or overridden with environment variables:
 
 ```sh
 # Minimal CPU usage (single-threaded inference)
@@ -159,9 +159,17 @@ CHUNK_MS=160 INTRA_THREADS=1 npm run tauri dev
 |-----------------|-----------------|---------|
 | 2               | 1               | Yes     |
 
+### Punctuation-based reset
+
+When enabled (the default), the decoder resets after producing text that ends with sentence-ending punctuation — `.`, `?`, or `!`. Ellipsis (`...`) and decimal-looking patterns (e.g. `3.14`) are excluded. This gives the decoder a clean slate at sentence boundaries, which improves transcription quality for subsequent sentences. Each reset is logged to the diagnostics DB as a `punctuation_reset`. Toggle via the Preferences window, or set the `PUNCTUATION_RESET` environment variable:
+
+```sh
+PUNCTUATION_RESET=false npm run tauri dev
+```
+
 ### Mid-speech reset
 
-Nemotron's streaming decoder can occasionally get "stuck" and produce consecutive empty transcriptions even while speech is ongoing. As a workaround, the processing loop tracks consecutive empty results during VAD-detected speech. If the count reaches `EMPTY_RESET_THRESHOLD` (default: 6 chunks, ~3.4s at 560ms), the decoder state is reset and the event is logged to the diagnostics DB as a `mid_speech_reset`. This trades a brief interruption for faster recovery. The threshold is a constant in `audio_engine.rs`.
+Nemotron's streaming decoder can occasionally get "stuck" and produce consecutive empty transcriptions even while speech is ongoing. As a workaround, the processing loop tracks consecutive empty results during VAD-detected speech. If the count reaches the `empty_reset_threshold` (default: 6 chunks, ~3.4s at 560ms), the decoder state is reset and the event is logged to the diagnostics DB as a `mid_speech_reset`. This trades a brief interruption for faster recovery. The threshold is configurable via the Preferences window (or by editing `~/.config/larmindon/settings.json`).
 
 ## Platform notes
 
