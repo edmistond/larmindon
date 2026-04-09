@@ -74,11 +74,18 @@ fn get_settings(current_settings: State<'_, Mutex<Settings>>) -> Result<Settings
 fn save_settings(
     new_settings: Settings,
     current_settings: State<'_, Mutex<Settings>>,
+    engine: State<'_, Mutex<AudioEngineHandle>>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     new_settings.save()?;
     let mut settings = current_settings.lock().map_err(|e| e.to_string())?;
     *settings = new_settings.clone();
+    // Hot-reload settings into the active processing thread (if any)
+    if let Ok(handle) = engine.lock() {
+        let _ = handle.cmd_tx.send(Command::UpdateSettings {
+            settings: new_settings.clone(),
+        });
+    }
     let _ = app_handle.emit("settings-changed", new_settings);
     Ok(())
 }

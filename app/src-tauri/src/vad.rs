@@ -94,7 +94,7 @@ impl SileroModel {
 
 pub struct PreSpeechRingBuffer {
     data: Vec<f32>,
-    capacity: usize,
+    pub(crate) capacity: usize,
     write_pos: usize,
     len: usize,
 }
@@ -196,6 +196,29 @@ impl VadProcessor {
 
     pub fn state(&self) -> VadState {
         self.state
+    }
+
+    /// Reset all state for reuse between sessions.
+    /// Clears the model's internal ONNX state, ring buffer, and state machine counters.
+    pub fn reset(&mut self) {
+        self.model.reset();
+        self.ring_buffer = PreSpeechRingBuffer::new(self.ring_buffer.capacity);
+        self.state = VadState::Silence;
+        self.speech_frame_count = 0;
+        self.silence_frame_count = 0;
+    }
+
+    /// Update tunable parameters without reloading the model.
+    pub fn update_params(
+        &mut self,
+        threshold: f32,
+        min_silence_duration_ms: u32,
+        min_speech_duration_ms: u32,
+    ) {
+        let frame_ms = (VAD_CHUNK_SIZE as f32 / VAD_SAMPLE_RATE as f32 * 1000.0) as u32;
+        self.threshold = threshold;
+        self.min_silence_frames = min_silence_duration_ms / frame_ms;
+        self.min_speech_frames = min_speech_duration_ms / frame_ms;
     }
 
     /// Process a single 512-sample frame. Returns the decision and the speech probability.

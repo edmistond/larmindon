@@ -40,6 +40,10 @@ pub enum Command {
     Reconnect {
         device_id: String,
     },
+    /// Push updated settings to the active processing thread (hot-reload).
+    UpdateSettings {
+        settings: Settings,
+    },
 }
 
 pub struct AudioEngine {
@@ -48,10 +52,16 @@ pub struct AudioEngine {
     capture_backend: Box<dyn AudioCapture>,
     // Active session state
     active_stream: Option<Box<dyn AudioStream>>,
-    processing_thread: Option<JoinHandle<()>>,
+    processing_thread: Option<JoinHandle<Option<(Nemotron, VadProcessor)>>>,
     stop_flag: Option<Arc<AtomicBool>>,
     active_buffer: Option<Arc<Mutex<VecDeque<f32>>>>,
     active_session_info: Arc<Mutex<ActiveSessionInfo>>,
+    settings_tx: Option<mpsc::Sender<Settings>>,
+    // Cached models for reuse across sessions
+    cached_nemotron: Option<Nemotron>,
+    cached_vad: Option<VadProcessor>,
+    cached_model_path: Option<String>,
+    cached_model_config: Option<(usize, usize)>,
 }
 
 impl AudioEngine {
@@ -74,6 +84,11 @@ impl AudioEngine {
             stop_flag: None,
             active_buffer: None,
             active_session_info,
+            settings_tx: None,
+            cached_nemotron: None,
+            cached_vad: None,
+            cached_model_path: None,
+            cached_model_config: None,
         }
     }
 
@@ -118,6 +133,11 @@ impl AudioEngine {
                 }
                 Command::Reconnect { device_id } => {
                     self.reconnect_stream(device_id);
+                }
+                Command::UpdateSettings { settings } => {
+                    if let Some(ref tx) = self.settings_tx {
+                        let _ = tx.send(settings);
+                    }
                 }
             }
         }
@@ -177,6 +197,33 @@ impl AudioEngine {
             input_rate, needs_resample
         );
 
+        // Check if cached models are compatible with current settings
+        let model_path_str = settings::expand_tilde(&settings.model_path)
+            .to_string_lossy()
+            .to_string();
+        let model_config = (settings.intra_threads, settings.inter_threads);
+        let cached_compatible = self.cached_model_path.as_deref() == Some(&model_path_str)
+            && self.cached_model_config == Some(model_config);
+
+        let cached_nemotron = if cached_compatible {
+            self.cached_nemotron.take()
+        } else {
+            if self.cached_nemotron.is_some() {
+                println!("Model config changed — discarding cached models");
+            }
+            self.cached_nemotron.take(); // drop old
+            None
+        };
+        let cached_vad = if cached_compatible {
+            self.cached_vad.take()
+        } else {
+            self.cached_vad.take(); // drop old
+            None
+        };
+
+        let (settings_tx, settings_rx) = mpsc::channel();
+        self.settings_tx = Some(settings_tx);
+
         let buffer_for_thread = Arc::clone(&buffer);
         let processing_thread = thread::spawn(move || {
             println!("[diag] Processing thread started");
@@ -187,9 +234,18 @@ impl AudioEngine {
                 input_rate,
                 needs_resample,
                 settings,
+                cached_nemotron,
+                cached_vad,
+                settings_rx,
             ) {
-                Ok(()) => println!("[diag] Processing loop exited normally"),
-                Err(e) => eprintln!("[diag] Processing loop CRASHED: {}", e),
+                Ok(models) => {
+                    println!("[diag] Processing loop exited normally");
+                    Some(models)
+                }
+                Err(e) => {
+                    eprintln!("[diag] Processing loop CRASHED: {}", e);
+                    None
+                }
             }
         });
 
@@ -197,6 +253,8 @@ impl AudioEngine {
         self.processing_thread = Some(processing_thread);
         self.stop_flag = Some(stop_flag);
         self.active_buffer = Some(buffer);
+        self.cached_model_path = Some(model_path_str);
+        self.cached_model_config = Some(model_config);
 
         // Update shared session info for the watcher
         if let Ok(mut info) = self.active_session_info.lock() {
@@ -214,13 +272,22 @@ impl AudioEngine {
         if let Some(flag) = self.stop_flag.take() {
             flag.store(true, Ordering::Relaxed);
         }
+        // Drop the settings sender so the processing thread's try_recv sees disconnect
+        self.settings_tx = None;
         // Stop and drop the stream
         if let Some(stream) = self.active_stream.take() {
             stream.stop();
         }
         if let Some(handle) = self.processing_thread.take() {
             match handle.join() {
-                Ok(()) => println!("[diag] Processing thread joined cleanly"),
+                Ok(Some((nemotron, vad))) => {
+                    println!("[diag] Processing thread joined — caching models for reuse");
+                    self.cached_nemotron = Some(nemotron);
+                    self.cached_vad = Some(vad);
+                }
+                Ok(None) => {
+                    println!("[diag] Processing thread joined — no models to cache (error path)");
+                }
                 Err(e) => eprintln!("[diag] Processing thread PANICKED: {:?}", e),
             }
         }
@@ -346,6 +413,7 @@ impl AudioEngine {
         Ok(conn)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn processing_loop(
         app_handle: AppHandle,
         buffer: Arc<Mutex<VecDeque<f32>>>,
@@ -353,7 +421,10 @@ impl AudioEngine {
         input_rate: usize,
         needs_resample: bool,
         settings: Settings,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+        cached_nemotron: Option<Nemotron>,
+        cached_vad: Option<VadProcessor>,
+        settings_rx: mpsc::Receiver<Settings>,
+    ) -> Result<(Nemotron, VadProcessor), Box<dyn std::error::Error>> {
         let chunk_size = settings::chunk_ms_to_samples(settings.chunk_ms);
         let db = Self::init_diag_db()?;
 
@@ -363,40 +434,53 @@ impl AudioEngine {
         )?;
         let session_id = db.last_insert_rowid();
 
-        let intra_threads = settings.intra_threads;
-        let inter_threads = settings.inter_threads;
-        let punctuation_reset_enabled = settings.punctuation_reset;
-        let empty_reset_threshold = settings.empty_reset_threshold;
-        let model_path = settings::expand_tilde(&settings.model_path);
-        println!(
-            "Loading Nemotron model from {} (intra_threads={}, inter_threads={})...",
-            model_path.display(),
-            intra_threads,
-            inter_threads
-        );
-        #[allow(unused_mut)]
-        let mut model_config = ExecutionConfig::new()
-            .with_intra_threads(intra_threads)
-            .with_inter_threads(inter_threads);
+        let mut punctuation_reset_enabled = settings.punctuation_reset;
+        let mut empty_reset_threshold = settings.empty_reset_threshold;
 
-        #[cfg(feature = "webgpu")]
-        {
-            println!("WebGPU feature enabled — using WebGPU (Metal) execution provider");
-            model_config = model_config.with_execution_provider(ExecutionProvider::WebGPU);
-        }
+        let mut model = if let Some(mut m) = cached_nemotron {
+            println!("Using cached Nemotron model (skipping reload)");
+            m.reset();
+            m
+        } else {
+            let model_path = settings::expand_tilde(&settings.model_path);
+            println!(
+                "Loading Nemotron model from {} (intra_threads={}, inter_threads={})...",
+                model_path.display(),
+                settings.intra_threads,
+                settings.inter_threads
+            );
+            #[allow(unused_mut)]
+            let mut model_config = ExecutionConfig::new()
+                .with_intra_threads(settings.intra_threads)
+                .with_inter_threads(settings.inter_threads);
 
-        let mut model = Nemotron::from_pretrained(&model_path, Some(model_config))?;
-        println!("Model loaded.");
+            #[cfg(feature = "webgpu")]
+            {
+                println!("WebGPU feature enabled — using WebGPU (Metal) execution provider");
+                model_config = model_config.with_execution_provider(ExecutionProvider::WebGPU);
+            }
 
-        println!("Loading Silero VAD model from {}...", VAD_MODEL_PATH);
-        let mut vad = VadProcessor::new(
-            Path::new(VAD_MODEL_PATH),
-            0.5, // threshold
-            500, // min_silence_duration_ms
-            250, // min_speech_duration_ms
-            500, // pre_speech_ms (ring buffer = 500ms)
-        )?;
-        println!("VAD model loaded.");
+            let m = Nemotron::from_pretrained(&model_path, Some(model_config))?;
+            println!("Model loaded.");
+            m
+        };
+
+        let mut vad = if let Some(mut v) = cached_vad {
+            println!("Using cached VAD model (skipping reload)");
+            v.reset();
+            v
+        } else {
+            println!("Loading Silero VAD model from {}...", VAD_MODEL_PATH);
+            let v = VadProcessor::new(
+                Path::new(VAD_MODEL_PATH),
+                0.5, // threshold
+                500, // min_silence_duration_ms
+                250, // min_speech_duration_ms
+                500, // pre_speech_ms (ring buffer = 500ms)
+            )?;
+            println!("VAD model loaded.");
+            v
+        };
 
         let mut resampler: Option<FftFixedIn<f32>> = if needs_resample {
             Some(FftFixedIn::<f32>::new(
@@ -428,7 +512,17 @@ impl AudioEngine {
                         chunk_num as i64
                     ],
                 );
-                break;
+                return Ok((model, vad));
+            }
+
+            // Check for hot-reloaded settings
+            if let Ok(new_settings) = settings_rx.try_recv() {
+                println!(
+                    "[diag] Hot-reloading settings: punctuation_reset={}, empty_reset_threshold={}",
+                    new_settings.punctuation_reset, new_settings.empty_reset_threshold
+                );
+                punctuation_reset_enabled = new_settings.punctuation_reset;
+                empty_reset_threshold = new_settings.empty_reset_threshold;
             }
 
             let drained: Vec<f32> = {
@@ -676,8 +770,6 @@ impl AudioEngine {
                 }
             }
         }
-
-        Ok(())
     }
 }
 
