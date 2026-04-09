@@ -23,17 +23,30 @@ graph TB
     subgraph Tauri ["Main Thread (Tauri)"]
         CMD["Command handlers<br/>list_devices / start / stop"]
         STATE["Managed State<br/>AudioEngineHandle { cmd_tx }"]
+        SELECT["Backend selection<br/>env var → PipeWire test → CPAL fallback"]
     end
 
     subgraph Engine ["Engine Thread"]
         LOOP["AudioEngine::run()<br/>Command dispatch loop"]
     end
 
-    subgraph Session ["Session (per start_transcription)"]
-        subgraph Capture ["Audio Capture Thread<br/>(CPAL or PipeWire)"]
-            CAPTURE["Audio capture<br/>Downmix to mono f32"]
+    subgraph Backend ["Audio Backend (AudioCapture trait)"]
+        subgraph CPAL_BE ["CPAL Backend<br/>(macOS / Windows / Linux fallback)"]
+            CPAL_CAP["cpal::Stream<br/>Downmix to mono f32"]
         end
 
+        subgraph PW_BE ["PipeWire Backend<br/>(Linux default)"]
+            PW_CAP["PipeWire stream<br/>App / Input / Monitor capture"]
+        end
+    end
+
+    subgraph Watcher ["PipeWire Watcher Thread<br/>(Linux only)"]
+        REGISTRY["Registry listener<br/>Track device adds/removals"]
+        RECONNECT["Auto-reconnect<br/>on active device loss"]
+        ACTIVE_INFO[("ActiveSessionInfo<br/>Arc&lt;Mutex&gt;<br/>device_id, app_name")]
+    end
+
+    subgraph Session ["Session (per start_transcription)"]
         BUFFER[("Shared buffer<br/>Arc&lt;Mutex&lt;VecDeque&lt;f32&gt;&gt;&gt;")]
 
         subgraph Processing ["Processing Thread"]
@@ -54,8 +67,17 @@ graph TB
 
     UI -- "invoke()" --> CMD
     CMD -- "mpsc::Sender&lt;Command&gt;" --> LOOP
-    LOOP -- "start_session()" --> CAPTURE
-    CAPTURE -- "push_mono()" --> BUFFER
+    SELECT -. "startup" .-> CPAL_BE
+    SELECT -. "startup" .-> PW_BE
+    LOOP -- "start_session()" --> CPAL_CAP
+    LOOP -- "start_session()" --> PW_CAP
+    CPAL_CAP -- "push_mono()" --> BUFFER
+    PW_CAP -- "push_mono()" --> BUFFER
+    REGISTRY -- "device removed" --> RECONNECT
+    RECONNECT -- "Command::Reconnect" --> LOOP
+    REGISTRY -- "emit('devices-changed')" --> UI
+    LOOP -- "writes" --> ACTIVE_INFO
+    ACTIVE_INFO -- "reads" --> REGISTRY
     BUFFER --> DRAIN
     DRAIN --> RESAMPLE
     RESAMPLE -- "Yes" --> RUBATO --> VAD
@@ -74,8 +96,11 @@ graph TB
     style Frontend fill:#e1f5fe
     style Tauri fill:#fff3e0
     style Engine fill:#fff3e0
+    style Backend fill:#fce4ec
+    style CPAL_BE fill:#fce4ec
+    style PW_BE fill:#fce4ec
+    style Watcher fill:#fff9c4
     style Session fill:#f3e5f5
-    style Capture fill:#fce4ec
     style Processing fill:#e8f5e9
     style Diagnostics fill:#f5f5f5
 ```
@@ -84,7 +109,10 @@ graph TB
 
 - **Commands** flow down: React `invoke()` → Tauri command handler → `mpsc` channel → Engine thread
 - **Events** flow up: Processing thread → `app_handle.emit()` → React event listener
-- **Audio** flows through a shared lock-free-ish buffer: CPAL callback pushes, processing thread drains
+- **Audio** flows through a shared buffer: audio backend callback pushes mono f32 samples, processing thread drains
+- **Backend selection** at startup: `LARMINDON_AUDIO_BACKEND` env var → test PipeWire availability → fall back to CPAL. Only one backend is active per session.
+- **Device monitoring** (Linux/PipeWire only): a watcher thread monitors the PipeWire registry for device adds/removals, emits `devices-changed` events to the frontend, and sends `Command::Reconnect` to the engine if the active device disappears
+- **Shared session state**: the engine writes `ActiveSessionInfo` (device ID, app name, device type) to shared state; the watcher reads it to detect when the active device is lost
 - **Decoder resets** happen at three points: speech end (VAD), sentence punctuation (`. ? !`), or stuck-state heuristic (configurable, default 6 consecutive empty chunks)
 - **All threads are OS threads** — no async runtime (tokio, etc.)
 
