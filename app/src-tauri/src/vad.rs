@@ -135,7 +135,6 @@ impl PreSpeechRingBuffer {
         self.write_pos = 0;
         out
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -254,5 +253,4 @@ impl VadProcessor {
 
         Ok((decision, prob))
     }
-
 }

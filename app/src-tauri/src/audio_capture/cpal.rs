@@ -74,8 +74,11 @@ impl AudioCapture for CpalBackend {
         let host = cpal::default_host();
 
         let device = if let Some(ref id) = device_id {
-            let find_by_id =
-                |d: &Device| d.description().map(|desc| desc.name() == *id).unwrap_or(false);
+            let find_by_id = |d: &Device| {
+                d.description()
+                    .map(|desc| desc.name() == *id)
+                    .unwrap_or(false)
+            };
 
             host.input_devices()?
                 .find(find_by_id)
