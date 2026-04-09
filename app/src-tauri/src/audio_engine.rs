@@ -1,3 +1,5 @@
+#[cfg(any(feature = "webgpu", feature = "directml", feature = "migraphx"))]
+use parakeet_rs::ExecutionProvider;
 use parakeet_rs::{ExecutionConfig, Nemotron};
 use rubato::{FftFixedIn, Resampler};
 use rusqlite::Connection;
@@ -372,9 +374,17 @@ impl AudioEngine {
             intra_threads,
             inter_threads
         );
-        let model_config = ExecutionConfig::new()
+        #[allow(unused_mut)]
+        let mut model_config = ExecutionConfig::new()
             .with_intra_threads(intra_threads)
             .with_inter_threads(inter_threads);
+
+        #[cfg(feature = "webgpu")]
+        {
+            println!("WebGPU feature enabled — using WebGPU (Metal) execution provider");
+            model_config = model_config.with_execution_provider(ExecutionProvider::WebGPU);
+        }
+
         let mut model = Nemotron::from_pretrained(&model_path, Some(model_config))?;
         println!("Model loaded.");
 

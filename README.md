@@ -146,8 +146,8 @@ npm run tauri build
 Theoretically, optional Cargo features can be enabled for GPU-accelerated inference:
 
 ```sh
-# macOS - CoreML
-npm run tauri dev -- -- --features coreml
+# macOS - WebGPU (Metal under the hood)
+npm run tauri dev -- -- --features webgpu
 
 # Windows - DirectML
 npm run tauri dev -- -- --features directml

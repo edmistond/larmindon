@@ -45,7 +45,7 @@ windows = { version = "0.58", features = ["Win32_Graphics_DirectWrite"] }
 
 [features]
 default = ["cpal", "pipewire"]
-coreml = ["parakeet-rs/coreml"]
+webgpu = ["parakeet-rs/webgpu"]
 directml = ["parakeet-rs/directml"]
 migraphx = ["parakeet-rs/migraphx"]
 pipewire = ["dep:pipewire", "dep:libspa"]

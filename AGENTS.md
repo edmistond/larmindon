@@ -58,11 +58,14 @@ Example: `CHUNK_MS=160 INTRA_THREADS=1 npm run tauri dev`
 ## Feature Flags (Hardware Acceleration)
 
 ```sh
-npm run tauri dev -- -- --features coreml    # macOS
+npm run tauri dev -- -- --features webgpu    # macOS (Metal via WebGPU)
 npm run tauri dev -- -- --features directml  # Windows
 ```
 
-Note: GPU acceleration is unreliable in practice; CPU inference is default.
+Note: GPU acceleration is experimental; CPU inference is default. When adding a new
+execution provider feature flag in `Cargo.toml`, you must also wire it up in
+`audio_engine.rs` via `ExecutionConfig::with_execution_provider()` — the feature flag
+alone only makes the provider available at compile time.
 
 ## Platform Gotchas
 
