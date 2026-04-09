@@ -13,7 +13,7 @@ pub fn get_system_fonts() -> Vec<String> {
     // Remove duplicates and sort
     let unique: HashSet<_> = fonts.iter().cloned().collect();
     fonts = unique.into_iter().collect();
-    fonts.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    fonts.sort_by_key(|a| a.to_lowercase());
 
     fonts
 }

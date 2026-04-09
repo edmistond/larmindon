@@ -79,9 +79,7 @@ impl Settings {
 
     /// Save settings to disk, creating the config directory if needed.
     pub fn save(&self) -> Result<(), String> {
-        if let Err(e) = self.validate() {
-            return Err(e);
-        }
+        self.validate()?;
 
         let dir = Self::config_dir();
         std::fs::create_dir_all(&dir)
