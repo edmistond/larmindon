@@ -1,6 +1,15 @@
 # AGENTS.md
 
-Real-time speech-to-text desktop app: Tauri v2 backend (Rust) + React frontend. Uses Nemotron streaming ASR via parakeet-rs.
+Real-time speech-to-text desktop app: Tauri v2 backend (Rust) + React frontend.
+Uses Nemotron streaming ASR via parakeet-rs.
+
+## Committing Changes
+
+Commit changes frequently in git to checkpoint them.
+
+Before committing, make sure to run `cargo fmt` and `cargo clippy --fix` against
+`app/src-tauri` - address any changes recommended by clippy, if it cannot apply
+an automatic fix.
 
 ## Build & Run
 
@@ -18,17 +27,23 @@ cd app/src-tauri && cargo check
 
 ## Setup Requirements
 
-**Model Path**: Set via Preferences window (Cmd/Ctrl+, or ⚙️ button) or in `~/.config/larmindon/settings.json`. Default is `~/projects/prs-nemotron/`. Download the [Nemotron streaming model files](https://huggingface.co/altunenes/parakeet-rs/tree/main/nemotron-speech-streaming-en-0.6b) to your chosen path.
+* *Model Path* * : Set via Preferences window (Cmd/Ctrl+, or ⚙️ button) or in
+ `~/.config/larmindon/settings.json` . Default is `~/projects/prs-nemotron/` .
+ Download the
+ [Nemotron streaming model files](https://huggingface.co/altunenes/parakeet-rs/tree/main/nemotron-speech-streaming-en-0.6b)
+ to your chosen path.
 
 ## Verification
 
 No test suite exists. Verify changes by:
+
 1. Running the app and checking live transcription output
 2. Querying `larmindon_diag.sqlite` (project root) for timing/events data
 
 ## Settings & Environment Variables
 
-Settings are stored in `~/.config/larmindon/settings.json` and editable via the Preferences window. Environment variables override saved settings at runtime:
+Settings are stored in `~/.config/larmindon/settings.json` and editable via the
+Preferences window. Environment variables override saved settings at runtime:
 
 | Variable | Values | Default | Purpose |
 |----------|--------|---------|---------|
@@ -57,6 +72,7 @@ Note: GPU acceleration is unreliable in practice; CPU inference is default.
 ## Architecture Quick Reference
 
 ### Threading Model
+
 ```
 Main thread (Tauri)
   └─ Engine thread (mpsc command dispatch)
@@ -118,4 +134,5 @@ AI agents must disclose what tool and model they are using in the "Assisted-by" 
 Assisted-by: [Model Name] via [Tool Name]
 ```
 
-**Important**: The git commit header (subject line) should not contain any attribution—attribution belongs only in the commit message body.
+**Important** : The git commit header (subject line) should not contain any
+ attribution—attribution belongs only in the commit message body.

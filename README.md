@@ -4,7 +4,7 @@ A real-time captioning desktop app built with Tauri, React, and [parakeet-rs](ht
 
 > **Warning:** This project is early-stage and under active development. Expect rough edges.
 
-![Larmindon screenshot](larmindon.png)
+![Larmindon screenshot, showing the light mode version of Larmindon captioning a Convective Chronicles video on YouTube](larmindon.png)
 
 ## How it works
 
