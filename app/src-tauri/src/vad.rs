@@ -256,7 +256,11 @@ impl VadProcessor {
                         VadDecision::Silence
                     }
                 } else {
-                    self.speech_frame_count = 0;
+                    // Leaky decrement: a single sub-threshold frame costs one
+                    // frame of progress rather than resetting the entire counter.
+                    // This tolerates brief probability dips during onset (unvoiced
+                    // consonants, inter-phoneme gaps) that are common in noisy audio.
+                    self.speech_frame_count = self.speech_frame_count.saturating_sub(1);
                     self.silence_frame_count += 1;
                     self.ring_buffer.push_slice(frame);
                     VadDecision::Silence
