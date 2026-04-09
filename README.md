@@ -143,7 +143,7 @@ npm run tauri build
 
 ### Hardware acceleration
 
-Theoretically, optional Cargo features can be enabled for GPU-accelerated inference:
+Optional Cargo features can be enabled for GPU-accelerated inference:
 
 ```sh
 # macOS - WebGPU (Metal under the hood)
@@ -153,7 +153,13 @@ npm run tauri dev -- -- --features webgpu
 npm run tauri dev -- -- --features directml
 ```
 
-However, I've not seen it actually using the GPU in practice, unfortunately.
+For release builds with WebGPU, use the merge config to bundle `libwebgpu_dawn.dylib` into the `.app`:
+
+```sh
+npm run tauri build -- --config src-tauri/webgpu.conf.json -- --features webgpu
+```
+
+Note: WebGPU is marked experimental by parakeet-rs. On Apple Silicon, it uses Metal under the hood and reduces CPU load by offloading inference to the GPU, though the improvement is modest (~10%) due to the unified memory architecture.
 
 ### Chunk size
 
