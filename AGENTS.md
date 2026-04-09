@@ -125,14 +125,3 @@ SQLite database at `larmindon_diag.sqlite` (project root). Tables:
 - `vad_events` — speech_start, speech_end, mid_speech_reset, punctuation_reset events
 
 See README.md for query examples.
-
-## Attribution Requirements
-
-AI agents must disclose what tool and model they are using in the "Assisted-by" commit footer:
-
-```
-Assisted-by: [Model Name] via [Tool Name]
-```
-
-**Important** : The git commit header (subject line) should not contain any
- attribution—attribution belongs only in the commit message body.
