@@ -192,9 +192,9 @@ impl Settings {
 
 /// Expand tilde (~) to home directory in a path
 pub fn expand_tilde(path: &str) -> PathBuf {
-    if path.starts_with("~/") {
+    if let Some(stripped) = path.strip_prefix("~/") {
         if let Ok(home) = std::env::var("HOME") {
-            return PathBuf::from(home).join(&path[2..]);
+            return PathBuf::from(home).join(stripped);
         }
     }
     PathBuf::from(path)
