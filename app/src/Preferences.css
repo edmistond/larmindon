@@ -233,3 +233,42 @@
     color: var(--color-text-muted);
     font-style: italic;
 }
+
+/* Advanced settings accordion */
+.prefs-advanced {
+    margin-top: 0.5rem;
+}
+
+.prefs-advanced-toggle {
+    background: none;
+    border: none;
+    color: var(--color-text-secondary);
+    font-size: 0.9em;
+    font-family: inherit;
+    cursor: pointer;
+    padding: 0.3em 0;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.prefs-advanced-toggle:hover {
+    color: var(--color-text);
+}
+
+.prefs-advanced-arrow {
+    display: inline-block;
+    font-size: 0.7em;
+    transition: transform 0.15s ease;
+}
+
+.prefs-advanced-arrow.open {
+    transform: rotate(90deg);
+}
+
+.prefs-advanced-content {
+    display: flex;
+    flex-direction: column;
+    gap: 0.9rem;
+    padding: 0.7rem 0 0 1rem;
+}

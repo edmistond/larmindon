@@ -15,6 +15,8 @@ interface Settings {
   font_family: string;
   font_size_px: number;
   theme_mode: string;
+  vad_threshold_start: number;
+  vad_threshold_end: number;
 }
 
 const VALID_CHUNK_MS = [80, 160, 560, 1120];
@@ -32,6 +34,7 @@ function Preferences() {
   const [availableFonts, setAvailableFonts] = useState<string[]>([]);
   const [fontFilter, setFontFilter] = useState("");
   const [isLoadingFonts, setIsLoadingFonts] = useState(true);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   useEffect(() => {
     loadSettings();
@@ -300,6 +303,55 @@ function Preferences() {
             className="prefs-input prefs-input-narrow"
           />
         </label>
+      </div>
+
+      <div className="prefs-advanced">
+        <button
+          type="button"
+          className="prefs-advanced-toggle"
+          onClick={() => setAdvancedOpen(!advancedOpen)}
+        >
+          <span className={`prefs-advanced-arrow ${advancedOpen ? "open" : ""}`}>▶</span>
+          Advanced Settings
+        </button>
+        {advancedOpen && (
+          <div className="prefs-advanced-content">
+            <label className="prefs-label">
+              VAD speech start threshold
+              <input
+                type="number"
+                min={0}
+                max={1}
+                step={0.05}
+                value={settings.vad_threshold_start}
+                onChange={(e) =>
+                  update(
+                    "vad_threshold_start",
+                    Math.min(1, Math.max(0, Number(e.target.value))),
+                  )
+                }
+                className="prefs-input prefs-input-narrow"
+              />
+            </label>
+            <label className="prefs-label">
+              VAD speech end threshold
+              <input
+                type="number"
+                min={0}
+                max={1}
+                step={0.05}
+                value={settings.vad_threshold_end}
+                onChange={(e) =>
+                  update(
+                    "vad_threshold_end",
+                    Math.min(1, Math.max(0, Number(e.target.value))),
+                  )
+                }
+                className="prefs-input prefs-input-narrow"
+              />
+            </label>
+          </div>
+        )}
       </div>
 
       <p className="prefs-note">

@@ -163,7 +163,8 @@ pub struct VadProcessor {
     model: SileroModel,
     ring_buffer: PreSpeechRingBuffer,
     state: VadState,
-    threshold: f32,
+    threshold_start: f32,
+    threshold_end: f32,
     min_silence_frames: u32,
     min_speech_frames: u32,
     speech_frame_count: u32,
@@ -173,7 +174,8 @@ pub struct VadProcessor {
 impl VadProcessor {
     pub fn new(
         model_path: &Path,
-        threshold: f32,
+        threshold_start: f32,
+        threshold_end: f32,
         min_silence_duration_ms: u32,
         min_speech_duration_ms: u32,
         pre_speech_ms: usize,
@@ -186,7 +188,8 @@ impl VadProcessor {
             model,
             ring_buffer: PreSpeechRingBuffer::new(pre_speech_samples),
             state: VadState::Silence,
-            threshold,
+            threshold_start,
+            threshold_end,
             min_silence_frames: min_silence_duration_ms / frame_ms,
             min_speech_frames: min_speech_duration_ms / frame_ms,
             speech_frame_count: 0,
@@ -211,12 +214,14 @@ impl VadProcessor {
     /// Update tunable parameters without reloading the model.
     pub fn update_params(
         &mut self,
-        threshold: f32,
+        threshold_start: f32,
+        threshold_end: f32,
         min_silence_duration_ms: u32,
         min_speech_duration_ms: u32,
     ) {
         let frame_ms = (VAD_CHUNK_SIZE as f32 / VAD_SAMPLE_RATE as f32 * 1000.0) as u32;
-        self.threshold = threshold;
+        self.threshold_start = threshold_start;
+        self.threshold_end = threshold_end;
         self.min_silence_frames = min_silence_duration_ms / frame_ms;
         self.min_speech_frames = min_speech_duration_ms / frame_ms;
     }
@@ -227,7 +232,11 @@ impl VadProcessor {
         frame: &[f32],
     ) -> Result<(VadDecision, f32), Box<dyn std::error::Error>> {
         let prob = self.model.process_frame(frame)?;
-        let is_speech = prob >= self.threshold;
+        let active_threshold = match self.state {
+            VadState::Silence => self.threshold_start,
+            VadState::Speech => self.threshold_end,
+        };
+        let is_speech = prob >= active_threshold;
 
         let decision = match self.state {
             VadState::Silence => {

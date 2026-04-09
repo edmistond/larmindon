@@ -473,7 +473,8 @@ impl AudioEngine {
             println!("Loading Silero VAD model from {}...", VAD_MODEL_PATH);
             let v = VadProcessor::new(
                 Path::new(VAD_MODEL_PATH),
-                0.5, // threshold
+                settings.vad_threshold_start,
+                settings.vad_threshold_end,
                 500, // min_silence_duration_ms
                 250, // min_speech_duration_ms
                 500, // pre_speech_ms (ring buffer = 500ms)
@@ -518,11 +519,18 @@ impl AudioEngine {
             // Check for hot-reloaded settings
             if let Ok(new_settings) = settings_rx.try_recv() {
                 println!(
-                    "[diag] Hot-reloading settings: punctuation_reset={}, empty_reset_threshold={}",
-                    new_settings.punctuation_reset, new_settings.empty_reset_threshold
+                    "[diag] Hot-reloading settings: punctuation_reset={}, empty_reset_threshold={}, vad_threshold_start={}, vad_threshold_end={}",
+                    new_settings.punctuation_reset, new_settings.empty_reset_threshold,
+                    new_settings.vad_threshold_start, new_settings.vad_threshold_end
                 );
                 punctuation_reset_enabled = new_settings.punctuation_reset;
                 empty_reset_threshold = new_settings.empty_reset_threshold;
+                vad.update_params(
+                    new_settings.vad_threshold_start,
+                    new_settings.vad_threshold_end,
+                    500,
+                    250,
+                );
             }
 
             let drained: Vec<f32> = {

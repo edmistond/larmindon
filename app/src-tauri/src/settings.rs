@@ -19,6 +19,10 @@ pub struct Settings {
     pub font_size_px: u32,
     /// Theme mode: "light", "dark", or "system"
     pub theme_mode: String,
+    /// VAD speech-start threshold (probability to open a speech segment)
+    pub vad_threshold_start: f32,
+    /// VAD speech-end threshold (probability to close a speech segment)
+    pub vad_threshold_end: f32,
 }
 
 impl Default for Settings {
@@ -33,6 +37,8 @@ impl Default for Settings {
             font_family: String::new(),
             font_size_px: 0,
             theme_mode: "dark".to_string(),
+            vad_threshold_start: 0.5,
+            vad_threshold_end: 0.3,
         }
     }
 }
@@ -177,6 +183,25 @@ impl Settings {
             return Err(format!(
                 "Invalid theme_mode '{}'; must be one of {:?}",
                 self.theme_mode, VALID_THEMES
+            ));
+        }
+
+        if !(0.0..=1.0).contains(&self.vad_threshold_start) {
+            return Err(format!(
+                "vad_threshold_start must be between 0.0 and 1.0, got {}",
+                self.vad_threshold_start
+            ));
+        }
+        if !(0.0..=1.0).contains(&self.vad_threshold_end) {
+            return Err(format!(
+                "vad_threshold_end must be between 0.0 and 1.0, got {}",
+                self.vad_threshold_end
+            ));
+        }
+        if self.vad_threshold_start < self.vad_threshold_end {
+            return Err(format!(
+                "vad_threshold_start ({}) must be >= vad_threshold_end ({})",
+                self.vad_threshold_start, self.vad_threshold_end
             ));
         }
 
