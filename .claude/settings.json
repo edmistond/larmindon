@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.file_path // .tool_response.filePath // empty' | { read -r f; case \"$f\" in *app/src-tauri/*.rs) cd app/src-tauri && cargo fmt && cargo clippy --fix --allow-dirty --allow-staged --quiet 2>&1 ;; esac; } || true",
+            "timeout": 180,
+            "statusMessage": "cargo fmt + clippy --fix"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -5,3 +5,4 @@ larmindon_diag.sqlite-wal
 larmindon-x86_64.AppImage
 example.jpg
 CLAUDE.md
+.claude/settings.local.json
