@@ -2428,9 +2428,23 @@ version = "0.1.0"
 dependencies = [
  "core-foundation",
  "core-text",
- "cpal",
  "dark-light",
  "fontconfig",
+ "larmindon-core",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-opener",
+ "windows 0.58.0",
+]
+
+[[package]]
+name = "larmindon-core"
+version = "0.1.0"
+dependencies = [
+ "cpal",
  "libspa",
  "ndarray",
  "ort",
@@ -2440,11 +2454,6 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-opener",
- "windows 0.58.0",
 ]
 
 [[package]]

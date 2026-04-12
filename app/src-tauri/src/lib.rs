@@ -1,17 +1,53 @@
-mod audio_capture;
-mod audio_engine;
 mod font_enumeration;
-mod settings;
-mod vad;
 
-use audio_capture::{ActiveSessionInfo, AudioDevice};
-use audio_engine::{AudioEngine, Command};
-use settings::Settings;
+use larmindon_core::audio_capture::{ActiveSessionInfo, AudioDevice};
+use larmindon_core::audio_engine::{AudioEngine, Command};
+use larmindon_core::settings::Settings;
+use larmindon_core::EngineEventSink;
+use serde::Serialize;
+use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use tauri::menu::{Menu, MenuEvent, MenuItem, SubmenuBuilder};
 use tauri::{Emitter, Manager, State};
+
+// ---------------------------------------------------------------------------
+// Tauri event sink — bridges EngineEventSink to Tauri's event system
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+struct TauriEventSink(tauri::AppHandle);
+
+#[derive(Serialize, Clone)]
+struct TranscriptionPayload {
+    text: String,
+}
+
+impl EngineEventSink for TauriEventSink {
+    fn on_transcription(&self, text: String) {
+        let _ = self.0.emit("transcription", TranscriptionPayload { text });
+    }
+
+    fn on_error(&self, message: String) {
+        let _ = self.0.emit(
+            "transcription-error",
+            TranscriptionPayload { text: message },
+        );
+    }
+
+    fn on_source_switched(&self, device_id: String) {
+        let _ = self.0.emit("source-switched", &device_id);
+    }
+
+    fn on_devices_changed(&self, devices: Vec<AudioDevice>) {
+        let _ = self.0.emit("devices-changed", &devices);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tauri command handlers
+// ---------------------------------------------------------------------------
 
 struct AudioEngineHandle {
     cmd_tx: mpsc::Sender<Command>,
@@ -109,14 +145,19 @@ fn get_system_theme() -> String {
 fn get_system_fonts() -> Vec<String> {
     font_enumeration::get_system_fonts()
 }
-fn create_audio_backend() -> Box<dyn audio_capture::AudioCapture> {
+
+// ---------------------------------------------------------------------------
+// Audio backend selection
+// ---------------------------------------------------------------------------
+
+fn create_audio_backend() -> Box<dyn larmindon_core::audio_capture::AudioCapture> {
     // Check for environment override first
     if let Ok(backend) = std::env::var("LARMINDON_AUDIO_BACKEND") {
         match backend.as_str() {
             "cpal" => {
                 println!("Using CPAL backend (via LARMINDON_AUDIO_BACKEND env var)");
                 #[cfg(feature = "cpal")]
-                return audio_capture::cpal::create_backend();
+                return larmindon_core::audio_capture::cpal::create_backend();
                 #[cfg(not(feature = "cpal"))]
                 panic!("CPAL feature not enabled but requested via LARMINDON_AUDIO_BACKEND environment variable. Rebuild with --features cpal");
             }
@@ -124,7 +165,7 @@ fn create_audio_backend() -> Box<dyn audio_capture::AudioCapture> {
                 #[cfg(all(target_os = "linux", feature = "pipewire"))]
                 {
                     println!("Using PipeWire backend (via LARMINDON_AUDIO_BACKEND env var)");
-                    return audio_capture::pipewire::create_backend();
+                    return larmindon_core::audio_capture::pipewire::create_backend();
                 }
                 #[cfg(not(all(target_os = "linux", feature = "pipewire")))]
                 panic!("PipeWire backend requested but feature not enabled. On Linux, rebuild with --features pipewire");
@@ -147,7 +188,7 @@ fn create_audio_backend() -> Box<dyn audio_capture::AudioCapture> {
         match test_pipewire_available() {
             Ok(true) => {
                 println!("PipeWire is available, using PipeWire backend");
-                return audio_capture::pipewire::create_backend();
+                return larmindon_core::audio_capture::pipewire::create_backend();
             }
             Ok(false) => {
                 println!("PipeWire not available, falling back to CPAL");
@@ -165,7 +206,7 @@ fn create_audio_backend() -> Box<dyn audio_capture::AudioCapture> {
     #[cfg(feature = "cpal")]
     {
         println!("Using CPAL backend");
-        audio_capture::cpal::create_backend()
+        larmindon_core::audio_capture::cpal::create_backend()
     }
     #[cfg(not(feature = "cpal"))]
     {
@@ -187,6 +228,10 @@ fn test_pipewire_available() -> Result<bool, Box<dyn std::error::Error>> {
 
     result
 }
+
+// ---------------------------------------------------------------------------
+// App setup
+// ---------------------------------------------------------------------------
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -264,6 +309,7 @@ pub fn run() {
 
             let (cmd_tx, cmd_rx) = mpsc::channel();
             let app_handle = app.handle().clone();
+            let event_sink = TauriEventSink(app_handle);
 
             // Shared session info for watcher ↔ engine communication
             let active_session_info = Arc::new(Mutex::new(ActiveSessionInfo::default()));
@@ -271,21 +317,29 @@ pub fn run() {
             // Create the appropriate audio capture backend
             let capture_backend = create_audio_backend();
 
+            // Diagnostics DB path: relative to the Tauri app's manifest dir
+            let diag_db_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("..")
+                .join("larmindon_diag.sqlite");
+
             // Start persistent PipeWire device watcher (Linux only).
             // Must be stored in managed state to keep it alive for the app's lifetime.
             #[cfg(all(target_os = "linux", feature = "pipewire"))]
             {
-                let watcher_app_handle = app.handle().clone();
+                use larmindon_core::audio_capture::pipewire::PipewireBackend;
+
+                let watcher_event_sink = event_sink.clone();
                 let watcher_cmd_tx = cmd_tx.clone();
                 let watcher_session_info = active_session_info.clone();
                 let watcher_devices_cache = capture_backend
                     .as_any()
-                    .and_then(|a| a.downcast_ref::<audio_capture::pipewire::PipewireBackend>())
+                    .and_then(|a| a.downcast_ref::<PipewireBackend>())
                     .map(|pw| pw.last_devices.clone());
 
                 if let Some(devices_cache) = watcher_devices_cache {
-                    let watcher = audio_capture::pipewire::start_watcher(
-                        watcher_app_handle,
+                    let watcher = larmindon_core::audio_capture::pipewire::start_watcher(
+                        watcher_event_sink,
                         watcher_cmd_tx,
                         watcher_session_info,
                         devices_cache,
@@ -300,8 +354,13 @@ pub fn run() {
 
             let session_info_for_engine = active_session_info.clone();
             let engine_thread = thread::spawn(move || {
-                let engine =
-                    AudioEngine::new(app_handle, cmd_rx, capture_backend, session_info_for_engine);
+                let engine = AudioEngine::new(
+                    event_sink,
+                    cmd_rx,
+                    capture_backend,
+                    session_info_for_engine,
+                    Some(diag_db_path),
+                );
                 engine.run();
             });
 
