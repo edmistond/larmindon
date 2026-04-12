@@ -3,6 +3,10 @@
 Real-time speech-to-text desktop app: Tauri v2 backend (Rust) + React frontend.
 Uses Nemotron streaming ASR via parakeet-rs.
 
+## Build Commands
+- Use `npm run tauri build` (not `cargo tauri build`) for Tauri builds
+- Run npm commands from the `app/` directory, not the repo root
+
 ## Committing Changes
 
 Commit changes frequently in git to checkpoint them.
@@ -11,10 +15,13 @@ Before committing, make sure to run `cargo fmt` and `cargo clippy --fix` against
 `app/src-tauri` - address any changes recommended by clippy, if it cannot apply
 an automatic fix.
 
+### Git Commits
+- Do not add 'Assisted-by' lines; use only the standard 'Co-authored-by' trailer
+- Verify implementation is wired up end-to-end before committing (e.g., feature flags must actually be referenced in code)
+
 ## Build & Run
 
 ```sh
-cd app  # Must run from app/ subdirectory
 npm install            # first time only
 npm run tauri dev      # dev build + hot reload
 npm run tauri build    # release bundle (.app/.dmg/.exe)
