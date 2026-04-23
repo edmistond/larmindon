@@ -5,7 +5,7 @@ use larmindon_core::audio_engine::{AudioEngine, Command};
 use larmindon_core::settings::Settings;
 use larmindon_core::EngineEventSink;
 use serde::Serialize;
-use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -317,11 +317,14 @@ pub fn run() {
             // Create the appropriate audio capture backend
             let capture_backend = create_audio_backend();
 
-            // Diagnostics DB path: relative to the Tauri app's manifest dir
-            let diag_db_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("..")
-                .join("..")
-                .join("larmindon_diag.sqlite");
+            // Shared live toggle for diagnostics logging. Mirrors
+            // settings.diagnostics_enabled and is updated by the engine on
+            // Command::UpdateSettings so toggling off mid-session stops writes.
+            let diag_enabled = {
+                let s = app.state::<Mutex<Settings>>();
+                let guard = s.lock().unwrap();
+                Arc::new(AtomicBool::new(guard.diagnostics_enabled))
+            };
 
             // Start persistent PipeWire device watcher (Linux only).
             // Must be stored in managed state to keep it alive for the app's lifetime.
@@ -359,7 +362,7 @@ pub fn run() {
                     cmd_rx,
                     capture_backend,
                     session_info_for_engine,
-                    Some(diag_db_path),
+                    diag_enabled,
                 );
                 engine.run();
             });

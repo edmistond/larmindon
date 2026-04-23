@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import "./Preferences.css";
 
@@ -17,6 +17,8 @@ interface Settings {
   theme_mode: string;
   vad_threshold_start: number;
   vad_threshold_end: number;
+  diagnostics_enabled: boolean;
+  diagnostics_db_path: string;
 }
 
 const VALID_CHUNK_MS = [80, 160, 560, 1120];
@@ -133,6 +135,18 @@ function Preferences() {
     });
     if (selected) {
       setSettings((s) => (s ? { ...s, model_path: selected } : s));
+      setSaved(false);
+    }
+  }
+
+  async function handleBrowseDiagDb() {
+    const selected = await save({
+      title: "Diagnostic Database Path",
+      defaultPath: settings?.diagnostics_db_path || undefined,
+      filters: [{ name: "SQLite", extensions: ["sqlite", "db"] }],
+    });
+    if (selected) {
+      setSettings((s) => (s ? { ...s, diagnostics_db_path: selected } : s));
       setSaved(false);
     }
   }
@@ -302,6 +316,37 @@ function Preferences() {
             placeholder="0 = default"
             className="prefs-input prefs-input-narrow"
           />
+        </label>
+      </div>
+
+      <div className="prefs-form">
+        <label className="prefs-label prefs-checkbox-label">
+          <input
+            type="checkbox"
+            checked={settings.diagnostics_enabled}
+            onChange={(e) => update("diagnostics_enabled", e.target.checked)}
+          />
+          Save diagnostic data
+        </label>
+
+        <label className="prefs-label">
+          Diagnostic Database Path
+          <div className="prefs-row">
+            <input
+              type="text"
+              value={settings.diagnostics_db_path}
+              onChange={(e) => update("diagnostics_db_path", e.target.value)}
+              disabled={!settings.diagnostics_enabled}
+              className="prefs-input prefs-input-wide"
+            />
+            <button
+              className="prefs-browse-btn"
+              onClick={handleBrowseDiagDb}
+              disabled={!settings.diagnostics_enabled}
+            >
+              Browse...
+            </button>
+          </div>
         </label>
       </div>
 

@@ -198,7 +198,9 @@ function App() {
       title: "Preferences",
       width: 500,
       height: 480,
-      resizable: false,
+      minWidth: 420,
+      minHeight: 400,
+      resizable: true,
       center: true,
     });
   }
