@@ -119,8 +119,11 @@ h1 {
 /* Lane labels */
 .lane-text {
   fill: var(--text-dim);
-  font-size: 9px;
-  text-anchor: end;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-anchor: middle;
+  text-transform: uppercase;
 }
 
 .lane-divider {
@@ -156,8 +159,6 @@ h1 {
 .conn-drain.active  { stroke: var(--drain); animation: dash-flow 0.4s linear infinite; }
 .conn-reset         { marker-end: none; stroke-dasharray: 4 4; }
 .conn-reset.active  { stroke: var(--reset); }
-.conn-diag          { stroke-dasharray: 3 3; opacity: 0.5; }
-.conn-diag.active   { stroke: var(--infer); }
 
 @keyframes dash-flow {
   to { stroke-dashoffset: -10; }
@@ -250,11 +251,13 @@ h1 {
 .prob-fill.above { fill: var(--speech); }
 
 .threshold-line {
-  stroke: var(--reset);
   stroke-width: 1;
   stroke-dasharray: 2 2;
   opacity: 0.8;
 }
+
+.threshold-start { stroke: var(--reset); }
+.threshold-end   { stroke: var(--drain); }
 
 .prob-label {
   fill: var(--text-dim);

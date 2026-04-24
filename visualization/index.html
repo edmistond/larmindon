@@ -9,7 +9,7 @@
 <body>
 <header>
   <h1>Larmindon Audio Pipeline</h1>
-  <p class="subtitle">Real-time speech-to-text data flow visualization</p>
+  <p class="subtitle">Real-time speech-to-text data flow — larmindon-core pipeline</p>
 </header>
 
 <div class="controls">
@@ -47,10 +47,12 @@
     </defs>
 
     <!-- ============ Thread lane labels (background) ============ -->
-    <g class="lane-labels" opacity="0.35">
-      <text x="1185" y="60" class="lane-text">CPAL Callback</text>
-      <line x1="0" y1="90" x2="1200" y2="90" class="lane-divider"/>
-      <text x="1185" y="115" class="lane-text">Processing Thread</text>
+    <!-- CPAL callback writes to Shared Buffer; Processing Thread drains
+         it and runs everything downstream. Boundary is vertical. -->
+    <g class="lane-labels" opacity="0.4">
+      <text x="285" y="18" class="lane-text lane-text-left">CPAL Callback Thread</text>
+      <text x="875" y="18" class="lane-text lane-text-left">Processing Thread</text>
+      <line x1="580" y1="10" x2="580" y2="605" class="lane-divider"/>
     </g>
 
     <!-- ============ Connection paths ============ -->
@@ -75,8 +77,6 @@
       <path id="conn-nemotron-output" class="conn" d="M 1070 470 L 1070 510"/>
       <!-- Nemotron → Decoder Reset (feedback loop) -->
       <path id="conn-reset-loop" class="conn conn-reset" d="M 1020 430 Q 960 430 960 390 Q 960 350 1020 350"/>
-      <!-- Nemotron → Diagnostics -->
-      <path id="conn-nemotron-diag" class="conn conn-diag" d="M 1150 390 L 1185 390"/>
     </g>
 
     <!-- ============ Stage: Audio Input ============ -->
@@ -116,12 +116,15 @@
       <text class="stage-title" x="100" y="20">Silero VAD (ONNX)</text>
       <text class="stage-detail" x="100" y="36">512 samples / 32ms frames</text>
       <text id="vad-state" class="stage-state" x="100" y="55">SILENCE</text>
-      <!-- Probability bar -->
+      <!-- Probability bar with hysteresis thresholds -->
       <g transform="translate(15, 62)">
         <rect class="prob-track" x="0" y="0" width="170" height="12" rx="3"/>
         <rect id="vad-prob-fill" class="prob-fill" x="1" y="1" width="0" height="10" rx="2"/>
-        <line id="vad-threshold" class="threshold-line" x1="85" y1="0" x2="85" y2="12"/>
-        <text class="prob-label" x="85" y="22">threshold: 0.5</text>
+        <!-- end threshold 0.3 -->
+        <line class="threshold-line threshold-end" x1="51" y1="0" x2="51" y2="12"/>
+        <!-- start threshold 0.5 -->
+        <line class="threshold-line threshold-start" x1="85" y1="0" x2="85" y2="12"/>
+        <text class="prob-label" x="85" y="22">hysteresis: end 0.3 · start 0.5</text>
       </g>
     </g>
 

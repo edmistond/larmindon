@@ -5,14 +5,19 @@
   'use strict';
 
   // ─── Constants (matching the real system) ─────────────────────────
+  // Source of truth: larmindon-core/src/{vad.rs, settings.rs, audio_engine.rs}
   const ASR_SAMPLE_RATE = 16000;
-  const VAD_FRAME_SIZE = 512;         // 32ms at 16kHz
-  const PRE_SPEECH_CAPACITY = 8000;   // 500ms ring buffer
-  const CHUNK_SIZE = 8960;            // 560ms default
-  const EMPTY_RESET_THRESHOLD = 6;
-  const INPUT_RATE = 48000;
-  const MIN_SPEECH_FRAMES = 8;        // ~250ms (8 * 32ms)
-  const MIN_SILENCE_FRAMES = 16;      // ~500ms (16 * 32ms)
+  const VAD_FRAME_SIZE = 512;          // 32ms at 16kHz
+  const PRE_SPEECH_CAPACITY = 8000;    // 500ms ring buffer @ 16kHz
+  const CHUNK_SIZE = 8960;             // 560ms default (CHUNK_MS setting)
+  const EMPTY_RESET_THRESHOLD = 6;     // configurable in Preferences
+  const INPUT_RATE = 48000;            // hardcoded in audio_engine.rs
+  // VAD hysteresis (threshold_start / threshold_end in settings)
+  const VAD_THRESHOLD_START = 0.5;     // silence → speech
+  const VAD_THRESHOLD_END   = 0.3;     // speech → silence
+  // Frame counts are integer division of *_duration_ms / 32ms in vad.rs
+  const MIN_SPEECH_FRAMES  = 7;        // 250ms / 32ms (int-div)
+  const MIN_SILENCE_FRAMES = 15;       // 500ms / 32ms (int-div)
 
   // Simulated phrases
   const PHRASES = [
@@ -66,7 +71,6 @@
     asrNemotron:     $('conn-asr-nemotron'),
     nemotronOutput:  $('conn-nemotron-output'),
     resetLoop:       $('conn-reset-loop'),
-    nemotronDiag:    $('conn-nemotron-diag'),
   };
 
   // Stages
@@ -309,27 +313,33 @@
 
   // ─── VAD processing ───────────────────────────────────────────────
   //
-  // The real pipeline:
-  //   Resampled 16kHz audio → VAD (512-sample frames)
-  //     - silence:  frame → ring buffer (overwrites oldest when full)
-  //     - speech detected (after min_speech_frames):
-  //         ring buffer drains into ASR buffer (pre-speech context)
-  //         then ongoing frames → ASR buffer directly
-  //     - speech ends (after min_silence_frames):
-  //         final frame → ASR buffer, pad + flush, decoder reset
-  //
-  // There is NO separate "VAD → ASR" path — audio ALWAYS goes through
-  // the ring buffer during silence, and the ring buffer drains into
-  // the ASR buffer when speech starts.
+  // Mirrors larmindon-core/src/vad.rs `VadStateMachine::process`:
+  //   - Hysteresis: active threshold depends on current state
+  //       * Silence state uses threshold_start (0.5)
+  //       * Speech  state uses threshold_end   (0.3)
+  //   - Silence state, sub-threshold frame:
+  //       speech_frame_count = saturating_sub(1)   ← leaky decrement,
+  //       not a full reset (tolerates brief dips during onset)
+  //   - Silence, pending speech (< min_speech_frames):
+  //       frame still pushed into ring buffer
+  //   - Speech start:
+  //       ring_buffer.drain_all() → prepend to ASR buffer, then frame
+  //   - Speech continues: frame → ASR buffer directly (bypasses ring)
+  //   - Speech end (after min_silence_frames): final frame → ASR buffer,
+  //       pad to chunk_size if partial, flush, model.reset()
 
   function processVadFrame() {
     const targetProb = getTargetProb(simTime);
     vadProb += (targetProb - vadProb) * 0.3;
     vadProb = Math.max(0, Math.min(1, vadProb + (Math.random() - 0.5) * 0.05));
 
-    const isSpeech = vadProb >= 0.5;
+    // Hysteresis: which threshold applies depends on current state
+    const activeThreshold = vadCurrentState === 'silence'
+      ? VAD_THRESHOLD_START
+      : VAD_THRESHOLD_END;
+    const isSpeech = vadProb >= activeThreshold;
 
-    // Probability bar
+    // Probability bar — colored green whenever the current threshold is crossed
     vadProbFill.setAttribute('width', Math.round(vadProb * 168));
     vadProbFill.classList.toggle('above', isSpeech);
     setStageActive(stages.vad, true);
@@ -372,10 +382,11 @@
           updateRingVisual();
         }
       } else {
-        speechFrameCount = 0;
+        // Leaky decrement, not a full reset — mirrors saturating_sub(1) in vad.rs
+        speechFrameCount = Math.max(0, speechFrameCount - 1);
         silenceFrameCount++;
 
-        // Silence: frame → ring buffer
+        // Silence: frame → ring buffer (drops oldest when full)
         ringBufferLevel = Math.min(ringBufferLevel + VAD_FRAME_SIZE, PRE_SPEECH_CAPACITY);
         setConnActive(conns.vadRing, true);
         setConnActive(conns.vadAsr, false);
@@ -438,7 +449,6 @@
     nemotronStatus.textContent = 'INFERRING';
     nemotronStatus.setAttribute('class', 'stage-state inferring');
     spawnParticle(conns.asrNemotron, '#a78bfa', 400);
-    setConnActive(conns.nemotronDiag, true);
     updateAsrVisual();
   }
 
@@ -451,7 +461,6 @@
     nemotronStatus.textContent = 'IDLE';
     nemotronStatus.setAttribute('class', 'stage-state');
     setStageActive(stages.nemotron, false);
-    setConnActive(conns.nemotronDiag, false);
 
     const producesEmpty = scenario === 'stuck' || scenario === 'silence' || Math.random() < 0.1;
 

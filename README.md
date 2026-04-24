@@ -18,15 +18,16 @@ The audio pipeline runs on a dedicated OS thread, communicating with the Tauri f
 graph TB
     subgraph Frontend ["Frontend (React)"]
         UI["App.tsx<br/>Device selector, Start/Stop, transcript display"]
+        PREFS["Preferences.tsx<br/>Settings panel (separate window)"]
     end
 
     subgraph Tauri ["Main Thread (Tauri)"]
-        CMD["Command handlers<br/>list_devices / start / stop"]
-        STATE["Managed State<br/>AudioEngineHandle { cmd_tx }"]
+        CMD["Command handlers<br/>list_devices / start_transcription / stop_transcription<br/>switch_source / get_settings / save_settings / …"]
+        STATE["Managed State<br/>AudioEngineHandle { cmd_tx }<br/>Mutex&lt;Settings&gt;"]
         SELECT["Backend selection<br/>env var → PipeWire test → CPAL fallback"]
     end
 
-    subgraph Engine ["Engine Thread"]
+    subgraph Engine ["Engine Thread (larmindon-core crate)"]
         LOOP["AudioEngine::run()<br/>Command dispatch loop"]
     end
 
@@ -49,24 +50,26 @@ graph TB
     subgraph Session ["Session (per start_transcription)"]
         BUFFER[("Shared buffer<br/>Arc&lt;Mutex&lt;VecDeque&lt;f32&gt;&gt;&gt;")]
 
-        subgraph Processing ["Processing Thread"]
+        subgraph Processing ["Processing Thread (larmindon-core crate)"]
             DRAIN["Drain buffer"]
             RESAMPLE{"Needs resample?"}
-            RUBATO["Resample to 16kHz<br/>(rubato FFT)"]
-            VAD["VAD gating<br/>Silero ONNX<br/>512-sample frames"]
-            RING["Pre-speech<br/>ring buffer<br/>(500ms)"]
+            RUBATO["Resample to 16kHz<br/>(rubato FftFixedIn)"]
+            VAD["VAD gating<br/>Silero ONNX · 512-sample frames<br/>hysteresis: start 0.5 / end 0.3"]
+            RING["Pre-speech<br/>ring buffer<br/>(500ms @ 16kHz)"]
             ASR_BUF["ASR buffer<br/>Vec&lt;f32&gt;"]
             ASR["Nemotron inference<br/>(parakeet-rs)<br/>configurable chunk size"]
             RESET{"Decoder reset?"}
         end
     end
 
-    subgraph Diagnostics ["Diagnostics"]
-        DB[("SQLite<br/>larmindon_diag.sqlite<br/>sessions / events / vad_events")]
+    subgraph Diagnostics ["Diagnostics (opt-in)"]
+        DB[("SQLite<br/>~/.config/larmindon/larmindon_diag.sqlite<br/>sessions / events / vad_events")]
     end
 
     UI -- "invoke()" --> CMD
+    PREFS -- "invoke() / emit('settings-changed')" --> CMD
     CMD -- "mpsc::Sender&lt;Command&gt;" --> LOOP
+    CMD -- "settings_tx (hot-reload)" --> LOOP
     SELECT -. "startup" .-> CPAL_BE
     SELECT -. "startup" .-> PW_BE
     LOOP -- "start_session()" --> CPAL_CAP
@@ -84,11 +87,12 @@ graph TB
     RESAMPLE -- "No" --> VAD
     VAD -- "Silence" --> RING
     VAD -- "SpeechStarted" --> ASR_BUF
-    RING -- "pre_speech_samples" --> ASR_BUF
+    RING -- "pre_speech_samples (drain on speech start)" --> ASR_BUF
     VAD -- "SpeechContinues" --> ASR_BUF
+    VAD -- "SpeechEnded<br/>(pad partial chunk + flush)" --> ASR_BUF
     ASR_BUF -- "chunk_size samples" --> ASR
     ASR -- "text" --> RESET
-    RESET -- "Sentence punctuation<br/>or 6 empty chunks<br/>or speech end" --> ASR
+    RESET -- "Sentence punctuation<br/>or ≥6 empty chunks (mid-speech)<br/>or speech end" --> ASR
     ASR -- "emit('transcription')" --> UI
     ASR -- "log timing + text" --> DB
     VAD -- "log state changes" --> DB
@@ -238,7 +242,7 @@ Windows WASAPI loopback support is present in the underlying CPAL code but has n
 
 ## Debugging / Diagnostics
 
-Larmindon writes diagnostic data to a SQLite database at `larmindon_diag.sqlite` in the project root. Each transcription session creates rows in `sessions`, `events`, and `vad_events` tables. Use these queries to investigate behavior:
+Diagnostics logging is **opt-in** — enable it via the Preferences window. When enabled, Larmindon writes to a SQLite database (default path: `~/.config/larmindon/larmindon_diag.sqlite`; the path is also configurable in Preferences). Each transcription session creates rows in `sessions`, `events`, and `vad_events` tables. Use these queries to investigate behavior:
 
 ### VAD queries
 
