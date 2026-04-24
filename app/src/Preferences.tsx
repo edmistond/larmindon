@@ -19,6 +19,11 @@ interface Settings {
   vad_threshold_end: number;
   diagnostics_enabled: boolean;
   diagnostics_db_path: string;
+  agc_enabled: boolean;
+  agc_target_rms_dbfs: number;
+  agc_max_gain_db: number;
+  agc_attack_ms: number;
+  agc_release_ms: number;
 }
 
 const VALID_CHUNK_MS = [80, 160, 560, 1120];
@@ -37,6 +42,7 @@ function Preferences() {
   const [fontFilter, setFontFilter] = useState("");
   const [isLoadingFonts, setIsLoadingFonts] = useState(true);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [agcOpen, setAgcOpen] = useState(false);
 
   useEffect(() => {
     loadSettings();
@@ -354,10 +360,101 @@ function Preferences() {
         <button
           type="button"
           className="prefs-advanced-toggle"
+          onClick={() => setAgcOpen(!agcOpen)}
+        >
+          <span className={`prefs-advanced-arrow ${agcOpen ? "open" : ""}`}>▶</span>
+          AGC Settings
+        </button>
+        {agcOpen && (
+          <div className="prefs-advanced-content">
+            <label className="prefs-label prefs-checkbox-label">
+              <input
+                type="checkbox"
+                checked={settings.agc_enabled}
+                onChange={(e) => update("agc_enabled", e.target.checked)}
+              />
+              Enable Automatic Gain Control
+            </label>
+            <label className="prefs-label">
+              Target RMS (dBFS)
+              <input
+                type="number"
+                min={-60}
+                max={0}
+                step={1}
+                value={settings.agc_target_rms_dbfs}
+                onChange={(e) =>
+                  update(
+                    "agc_target_rms_dbfs",
+                    Math.min(0, Math.max(-60, Number(e.target.value))),
+                  )
+                }
+                className="prefs-input prefs-input-narrow"
+              />
+            </label>
+            <label className="prefs-label">
+              Max gain (dB)
+              <input
+                type="number"
+                min={0}
+                max={60}
+                step={1}
+                value={settings.agc_max_gain_db}
+                onChange={(e) =>
+                  update(
+                    "agc_max_gain_db",
+                    Math.min(60, Math.max(0, Number(e.target.value))),
+                  )
+                }
+                className="prefs-input prefs-input-narrow"
+              />
+            </label>
+            <label className="prefs-label">
+              Attack (ms)
+              <input
+                type="number"
+                min={1}
+                max={1000}
+                step={1}
+                value={settings.agc_attack_ms}
+                onChange={(e) =>
+                  update(
+                    "agc_attack_ms",
+                    Math.min(1000, Math.max(1, Number(e.target.value))),
+                  )
+                }
+                className="prefs-input prefs-input-narrow"
+              />
+            </label>
+            <label className="prefs-label">
+              Release (ms)
+              <input
+                type="number"
+                min={1}
+                max={5000}
+                step={10}
+                value={settings.agc_release_ms}
+                onChange={(e) =>
+                  update(
+                    "agc_release_ms",
+                    Math.min(5000, Math.max(1, Number(e.target.value))),
+                  )
+                }
+                className="prefs-input prefs-input-narrow"
+              />
+            </label>
+          </div>
+        )}
+      </div>
+
+      <div className="prefs-advanced">
+        <button
+          type="button"
+          className="prefs-advanced-toggle"
           onClick={() => setAdvancedOpen(!advancedOpen)}
         >
           <span className={`prefs-advanced-arrow ${advancedOpen ? "open" : ""}`}>▶</span>
-          Advanced Settings
+          VAD Settings
         </button>
         {advancedOpen && (
           <div className="prefs-advanced-content">
