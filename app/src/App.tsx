@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { WebviewWindow, getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { LogicalPosition } from "@tauri-apps/api/dpi";
 import "./App.css";
 
 interface AudioDevice {
@@ -193,15 +194,28 @@ function App() {
       await existing.setFocus();
       return;
     }
-    new WebviewWindow("preferences", {
+
+    const width = 500;
+    const height = 480;
+
+    const main = getCurrentWebviewWindow();
+    const scale = await main.scaleFactor();
+    const mainPos = (await main.outerPosition()).toLogical(scale);
+    const mainSize = (await main.outerSize()).toLogical(scale);
+    const x = Math.round(mainPos.x + (mainSize.width - width) / 2);
+    const y = Math.round(mainPos.y + (mainSize.height - height) / 2);
+
+    const prefs = new WebviewWindow("preferences", {
       url: "preferences.html",
       title: "Preferences",
-      width: 500,
-      height: 480,
+      width,
+      height,
       minWidth: 420,
       minHeight: 400,
       resizable: true,
-      center: true,
+    });
+    prefs.once("tauri://created", () => {
+      prefs.setPosition(new LogicalPosition(x, y));
     });
   }
 
