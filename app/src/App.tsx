@@ -24,6 +24,7 @@ function App() {
   const [transcript, setTranscript] = useState("");
   const [error, setError] = useState("");
   const transcriptRef = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef(true);
   const [fontSettings, setFontSettings] = useState<Settings>({
     font_family: "",
     font_size_px: 0,
@@ -183,10 +184,18 @@ function App() {
   }, [fontSettings.theme_mode]);
 
   useEffect(() => {
-    if (transcriptRef.current) {
-      transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
+    const el = transcriptRef.current;
+    if (el && stickToBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
     }
   }, [transcript]);
+
+  function handleTranscriptScroll() {
+    const el = transcriptRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    stickToBottomRef.current = distanceFromBottom <= 20;
+  }
 
   async function openPreferences() {
     const existing = await WebviewWindow.getByLabel("preferences");
@@ -313,6 +322,7 @@ function App() {
       <div
         className="transcript"
         ref={transcriptRef}
+        onScroll={handleTranscriptScroll}
         style={{
           ...(fontSettings.font_family ? { fontFamily: fontSettings.font_family } : {}),
           ...(fontSettings.font_size_px > 0 ? { fontSize: `${fontSettings.font_size_px}px` } : {}),
