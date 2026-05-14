@@ -272,7 +272,10 @@ WHERE event_type = 'speech_start'
 
 **Mid-speech resets:**
 ```sql
-SELECT * FROM vad_events
+SELECT uptime_ms, consecutive_empty, chunks_since_decoder_reset,
+       audio_ms_since_decoder_reset, replay_chunks, replay_audio_ms,
+       replay_nonempty_chunks, replay_inference_ms
+FROM vad_events
 WHERE event_type = 'mid_speech_reset'
   AND session_id = (SELECT MAX(id) FROM sessions)
 ORDER BY uptime_ms;
