@@ -38,7 +38,6 @@ fn enumerate_system_fonts() -> Result<Vec<String>, Box<dyn std::error::Error>> {
 
 #[cfg(target_os = "windows")]
 fn enumerate_system_fonts() -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    use windows::core::{Interface, HSTRING, PCWSTR};
     use windows::Win32::Graphics::DirectWrite::{
         DWriteCreateFactory, IDWriteFactory, IDWriteFontCollection, DWRITE_FACTORY_TYPE_SHARED,
     };
@@ -47,7 +46,9 @@ fn enumerate_system_fonts() -> Result<Vec<String>, Box<dyn std::error::Error>> {
         let factory: IDWriteFactory =
             DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).map_err(|e| e.to_string())?;
 
-        let collection: IDWriteFontCollection = factory.GetSystemFontCollection(false)?;
+        let mut collection_opt: Option<IDWriteFontCollection> = None;
+        factory.GetSystemFontCollection(&mut collection_opt, false)?;
+        let collection = collection_opt.ok_or("GetSystemFontCollection returned null")?;
 
         let family_count = collection.GetFontFamilyCount();
         let mut families = Vec::with_capacity(family_count as usize);
