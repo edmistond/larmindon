@@ -45,3 +45,6 @@ migraphx = ["larmindon-core/migraphx"]
 pipewire = ["larmindon-core/pipewire"]
 cpal = ["larmindon-core/cpal"]
 fontconfig = ["dep:fontconfig"]
+
+[patch."https://github.com/edmistond/larmindon-core.git"]
+larmindon-core = { path = "../../../larmindon-core" }

@@ -2562,7 +2562,6 @@ dependencies = [
 [[package]]
 name = "larmindon-core"
 version = "0.1.0"
-source = "git+https://github.com/edmistond/larmindon-core.git?branch=main#084d9873e03797e3952725c1f0e6654055ada510"
 dependencies = [
  "cpal",
  "libspa",
