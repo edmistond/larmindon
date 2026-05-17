@@ -4,5 +4,7 @@
 <dict>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Larmindon needs microphone access for speech-to-text transcription.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Larmindon needs system audio access to caption audio playing through your Mac.</string>
 </dict>
 </plist>

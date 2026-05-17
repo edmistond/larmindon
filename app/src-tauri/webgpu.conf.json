@@ -1,7 +1,10 @@
 {
   "bundle": {
     "macOS": {
-      "frameworks": ["target/release/libwebgpu_dawn.dylib"]
+      "frameworks": ["target/release/libwebgpu_dawn.dylib"],
+      "files": {
+        "Frameworks/libwebgpu_dawn.dylib": "target/Frameworks/libwebgpu_dawn.dylib"
+      }
     }
   }
 }

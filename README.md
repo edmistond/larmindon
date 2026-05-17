@@ -157,11 +157,15 @@ npm run tauri dev -- -- --features webgpu
 npm run tauri dev -- -- --features directml
 ```
 
-For release builds with WebGPU, use the merge config to bundle `libwebgpu_dawn.dylib` into the `.app`:
+For release `.app` builds with WebGPU, use the merge config to bundle `libwebgpu_dawn.dylib` into the `.app`:
 
 ```sh
-npm run tauri build -- --config src-tauri/webgpu.conf.json -- --features webgpu
+npm run tauri:webgpu
 ```
+
+Use `npm run tauri:webgpu:full` for the full configured bundle set, including DMG packaging.
+
+The generic `npm run tauri build -- --features webgpu` path does not apply that merge config and will produce a `.app` that crashes at launch because `@rpath/libwebgpu_dawn.dylib` is missing.
 
 Note: WebGPU is marked experimental by parakeet-rs. On Apple Silicon, it uses Metal under the hood and reduces CPU load by offloading inference to the GPU, though the improvement is modest (~10%) due to the unified memory architecture.
 
@@ -213,7 +217,9 @@ Nemotron's streaming decoder can occasionally get "stuck" and produce consecutiv
 
 ### macOS
 
-macOS does not natively provide audio loopback devices. To capture system audio (e.g. from a browser or media player), you need third-party software such as [BlackHole](https://existential.audio/blackhole/) or [Loopback](https://rogueamoeba.com/loopback/) to create a virtual audio input device. Select the loopback device from the dropdown in Larmindon.
+On macOS 14.6 or newer, Larmindon can capture system audio directly through CPAL's CoreAudio process-tap loopback support. Output devices appear in the source dropdown as `[out] ...` targets, and the current default output is preferred when choosing a default source. macOS will prompt for System Audio Recording permission the first time this path is used.
+
+Virtual audio device software is no longer required on supported macOS versions. If native output capture is unavailable, permission is denied, or you need custom routing, third-party virtual devices such as [BlackHole](https://existential.audio/blackhole/) or [Loopback](https://rogueamoeba.com/loopback/) can still be selected as input devices.
 
 ### Linux
 

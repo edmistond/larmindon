@@ -25,6 +25,8 @@ an automatic fix.
 npm install            # first time only
 npm run tauri dev      # dev build + hot reload
 npm run tauri build    # release bundle (.app/.dmg/.exe)
+npm run tauri:webgpu   # macOS WebGPU release bundle with libwebgpu_dawn.dylib
+npm run tauri:webgpu:full # macOS WebGPU full bundle set
 ```
 
 Rust-only check (faster when not touching frontend):
@@ -67,7 +69,12 @@ Example: `CHUNK_MS=160 INTRA_THREADS=1 npm run tauri dev`
 ```sh
 npm run tauri dev -- -- --features webgpu    # macOS (Metal via WebGPU)
 npm run tauri dev -- -- --features directml  # Windows
+npm run tauri:webgpu                         # macOS release bundle
 ```
+
+Do not use `npm run tauri build -- --features webgpu` for macOS WebGPU release builds.
+It skips `src-tauri/webgpu.conf.json`, so the `.app` will link `@rpath/libwebgpu_dawn.dylib`
+without bundling that dylib into `Contents/Frameworks`.
 
 Note: GPU acceleration is experimental; CPU inference is default. When adding a new
 execution provider feature flag in `Cargo.toml`, you must also wire it up in
@@ -76,7 +83,7 @@ alone only makes the provider available at compile time.
 
 ## Platform Gotchas
 
-- **macOS**: Requires virtual loopback (BlackHole/Loopback) for system audio capture. No native loopback devices.
+- **macOS**: Uses CPAL/CoreAudio output monitors for native system audio capture on macOS 14.6+; BlackHole/Loopback remain useful fallbacks for older macOS versions or custom routing.
 - **Linux**: Uses PipeWire by default; falls back to CPAL with `LARMINDON_AUDIO_BACKEND=cpal`.
 
 ## Architecture Quick Reference
