@@ -6,6 +6,10 @@ Uses Nemotron streaming ASR via parakeet-rs.
 ## Build Commands
 - Use `npm run tauri build` (not `cargo tauri build`) for Tauri builds
 - Run npm commands from the `app/` directory, not the repo root
+- Prefix npm or cargo commands that may download dependencies with `sfw` so they
+  go through Socket Firewall Free. For example, use `sfw npm install`,
+  `sfw cargo fetch`, or `sfw cargo install ...` instead of running dependency
+  fetch/install commands directly.
 
 ## Committing Changes
 
@@ -22,7 +26,7 @@ an automatic fix.
 ## Build & Run
 
 ```sh
-npm install            # first time only
+sfw npm install        # first time only
 npm run tauri dev      # dev build + hot reload
 npm run tauri build    # release bundle (.app/.dmg/.exe)
 npm run tauri:webgpu   # macOS WebGPU release bundle with libwebgpu_dawn.dylib
