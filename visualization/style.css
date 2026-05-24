@@ -2,11 +2,11 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --bg: #0f172a;
-  --surface: #1e293b;
-  --border: #334155;
-  --text: #e2e8f0;
-  --text-dim: #94a3b8;
+  --bg: #111827;
+  --surface: #1f2937;
+  --border: #3f4b5f;
+  --text: #e5e7eb;
+  --text-dim: #9ca3af;
   --accent: #22d3ee;
   --accent-dim: rgba(34, 211, 238, 0.15);
   --speech: #34d399;
@@ -159,7 +159,6 @@ h1 {
 .conn-drain.active  { stroke: var(--drain); animation: dash-flow 0.4s linear infinite; }
 .conn-reset         { marker-end: none; stroke-dasharray: 4 4; }
 .conn-reset.active  { stroke: var(--reset); }
-
 @keyframes dash-flow {
   to { stroke-dashoffset: -10; }
 }
@@ -229,6 +228,9 @@ h1 {
 
 /* Ring buffer bar fill */
 .ring-bg { fill: #1a1f2e; }
+.agc-bg { fill: #17251f; }
+.replay-bg { fill: #2a2413; }
+.diag-bg { fill: #1b2431; }
 
 .ring-fill-bar {
   fill: var(--drain);

@@ -32,7 +32,7 @@
 </div>
 
 <div class="pipeline-container">
-  <svg id="pipeline-svg" viewBox="0 0 1200 620" preserveAspectRatio="xMidYMid meet">
+  <svg id="pipeline-svg" viewBox="0 0 1200 680" preserveAspectRatio="xMidYMid meet">
     <defs>
       <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
         <polygon points="0 0, 8 3, 0 6" fill="#64748b"/>
@@ -50,92 +50,92 @@
     <!-- CPAL callback writes to Shared Buffer; Processing Thread drains
          it and runs everything downstream. Boundary is vertical. -->
     <g class="lane-labels" opacity="0.4">
-      <text x="285" y="18" class="lane-text lane-text-left">CPAL Callback Thread</text>
-      <text x="875" y="18" class="lane-text lane-text-left">Processing Thread</text>
-      <line x1="580" y1="10" x2="580" y2="605" class="lane-divider"/>
+      <text x="145" y="18" class="lane-text lane-text-left">Capture Backend</text>
+      <text x="715" y="18" class="lane-text lane-text-left">Processing Thread</text>
+      <line x1="245" y1="10" x2="245" y2="655" class="lane-divider"/>
     </g>
 
     <!-- ============ Connection paths ============ -->
     <g id="connections">
-      <!-- Audio Input → Shared Buffer -->
-      <path id="conn-device-buffer" class="conn" d="M 215 70 L 355 70"/>
-      <!-- Shared Buffer → Resampler -->
-      <path id="conn-buffer-resample" class="conn" d="M 540 70 L 620 70"/>
-      <!-- Resampler → VAD -->
-      <path id="conn-resample-vad" class="conn" d="M 820 70 L 820 155"/>
-
-      <!-- VAD → Ring Buffer (silence: frames buffered) -->
-      <path id="conn-vad-ring" class="conn" d="M 730 230 L 730 310"/>
-      <!-- VAD → ASR Buffer (speech: frames forwarded) -->
-      <path id="conn-vad-asr" class="conn" d="M 910 230 L 910 310"/>
-      <!-- Ring Buffer → ASR Buffer (drain on speech start) -->
-      <path id="conn-ring-asr" class="conn conn-drain" d="M 800 390 L 850 390"/>
-
-      <!-- ASR Buffer → Nemotron -->
-      <path id="conn-asr-nemotron" class="conn" d="M 980 390 L 1020 390"/>
-      <!-- Nemotron → Text Output -->
-      <path id="conn-nemotron-output" class="conn" d="M 1070 470 L 1070 510"/>
-      <!-- Nemotron → Decoder Reset (feedback loop) -->
-      <path id="conn-reset-loop" class="conn conn-reset" d="M 1020 430 Q 960 430 960 390 Q 960 350 1020 350"/>
+      <path id="conn-device-buffer" class="conn" d="M 205 80 L 270 80"/>
+      <path id="conn-buffer-resample" class="conn" d="M 470 80 L 520 80"/>
+      <path id="conn-resample-agc" class="conn" d="M 700 80 L 750 80"/>
+      <path id="conn-agc-vad" class="conn" d="M 910 80 L 955 80"/>
+      <path id="conn-vad-ring" class="conn" d="M 1030 145 L 1030 185 L 835 185 L 835 235"/>
+      <path id="conn-vad-asr" class="conn" d="M 1090 145 L 1090 235"/>
+      <path id="conn-ring-asr" class="conn conn-drain" d="M 925 295 L 980 295"/>
+      <path id="conn-asr-nemotron" class="conn" d="M 1090 350 L 1090 405"/>
+      <path id="conn-asr-replay" class="conn conn-drain" d="M 980 325 L 925 410"/>
+      <path id="conn-replay-nemotron" class="conn conn-drain" d="M 925 465 L 1000 465"/>
+      <path id="conn-nemotron-output" class="conn" d="M 1090 515 L 1090 555"/>
+      <path id="conn-reset-loop" class="conn conn-reset" d="M 1010 470 C 945 470 945 325 980 325"/>
     </g>
 
     <!-- ============ Stage: Audio Input ============ -->
-    <g id="stage-device" class="stage" transform="translate(30, 30)">
-      <rect class="stage-bg" width="185" height="80" rx="8"/>
-      <text class="stage-title" x="92" y="22">Audio Input (CPAL)</text>
-      <text class="stage-detail" x="92" y="40">multi-ch → mono f32</text>
+    <g id="stage-device" class="stage" transform="translate(35, 40)">
+      <rect class="stage-bg" width="170" height="80" rx="8"/>
+      <text class="stage-title" x="85" y="22">Audio Capture</text>
+      <text class="stage-detail" x="85" y="40">CPAL / PipeWire → mono f32</text>
       <g class="waveform-mini" transform="translate(10, 45)">
         <polyline id="waveform-input" class="waveform" points=""/>
       </g>
     </g>
 
     <!-- ============ Stage: Shared Buffer ============ -->
-    <g id="stage-buffer" class="stage" transform="translate(355, 30)">
-      <rect class="stage-bg buffer-bg" width="185" height="80" rx="8"/>
-      <text class="stage-title" x="92" y="20">Shared Buffer</text>
-      <text class="stage-detail" x="92" y="36">Arc&lt;Mutex&lt;VecDeque&lt;f32&gt;&gt;&gt;</text>
+    <g id="stage-buffer" class="stage" transform="translate(270, 40)">
+      <rect class="stage-bg buffer-bg" width="200" height="80" rx="8"/>
+      <text class="stage-title" x="100" y="20">CaptureBuffer</text>
+      <text class="stage-detail" x="100" y="36">Arc&lt;Mutex&lt;...&gt;&gt; · 10s cap</text>
       <g transform="translate(8, 46)">
-        <rect class="buffer-visual" x="0" y="0" width="169" height="18" rx="4"/>
+        <rect class="buffer-visual" x="0" y="0" width="184" height="18" rx="4"/>
         <rect id="buffer-fill" class="buffer-fill" x="1" y="1" width="0" height="16" rx="3"/>
-        <text id="buffer-count" class="buffer-count" x="84" y="13">0 samples</text>
+        <text id="buffer-count" class="buffer-count" x="92" y="13">0 samples</text>
       </g>
     </g>
 
     <!-- ============ Stage: Resampler ============ -->
-    <g id="stage-resample" class="stage" transform="translate(620, 30)">
-      <rect class="stage-bg" width="200" height="80" rx="8"/>
-      <text class="stage-title" x="100" y="22">Resampler (rubato)</text>
-      <text class="stage-detail" x="100" y="40">FFT Fixed-In</text>
-      <text id="resample-rate" class="stage-detail" x="100" y="56">48kHz → 16kHz</text>
-      <circle id="resample-indicator" class="activity-dot" cx="180" cy="15" r="5"/>
+    <g id="stage-resample" class="stage" transform="translate(520, 40)">
+      <rect class="stage-bg" width="180" height="80" rx="8"/>
+      <text class="stage-title" x="90" y="22">Resampler</text>
+      <text class="stage-detail" x="90" y="40">rubato FftFixedIn</text>
+      <text id="resample-rate" class="stage-detail" x="90" y="56">stream rate → 16kHz</text>
+      <circle id="resample-indicator" class="activity-dot" cx="160" cy="15" r="5"/>
+    </g>
+
+    <!-- ============ Stage: AGC ============ -->
+    <g id="stage-agc" class="stage" transform="translate(750, 40)">
+      <rect class="stage-bg agc-bg" width="160" height="80" rx="8"/>
+      <text class="stage-title" x="80" y="22">AGC</text>
+      <text class="stage-detail" x="80" y="40">target -20 dBFS</text>
+      <text id="agc-gain" class="stage-state" x="80" y="60">0.0 dB</text>
     </g>
 
     <!-- ============ Stage: VAD (Silero) ============ -->
-    <g id="stage-vad" class="stage" transform="translate(720, 140)">
-      <rect class="stage-bg" width="200" height="95" rx="8"/>
-      <text class="stage-title" x="100" y="20">Silero VAD (ONNX)</text>
-      <text class="stage-detail" x="100" y="36">512 samples / 32ms frames</text>
-      <text id="vad-state" class="stage-state" x="100" y="55">SILENCE</text>
+    <g id="stage-vad" class="stage" transform="translate(955, 40)">
+      <rect class="stage-bg" width="210" height="105" rx="8"/>
+      <text class="stage-title" x="105" y="20">Silero VAD</text>
+      <text class="stage-detail" x="105" y="36">512 samples + 64 context</text>
+      <text id="vad-state" class="stage-state" x="105" y="55">SILENCE</text>
       <!-- Probability bar with hysteresis thresholds -->
-      <g transform="translate(15, 62)">
+      <g transform="translate(20, 66)">
         <rect class="prob-track" x="0" y="0" width="170" height="12" rx="3"/>
         <rect id="vad-prob-fill" class="prob-fill" x="1" y="1" width="0" height="10" rx="2"/>
         <!-- end threshold 0.3 -->
         <line class="threshold-line threshold-end" x1="51" y1="0" x2="51" y2="12"/>
         <!-- start threshold 0.5 -->
         <line class="threshold-line threshold-start" x1="85" y1="0" x2="85" y2="12"/>
-        <text class="prob-label" x="85" y="22">hysteresis: end 0.3 · start 0.5</text>
+        <text class="prob-label" x="85" y="24">end 0.3 · start 0.5</text>
       </g>
     </g>
 
     <!-- Decision labels on VAD outputs -->
-    <text class="conn-label" x="700" y="278">silence</text>
-    <text class="conn-label" x="920" y="278">speech</text>
+    <text class="conn-label" x="895" y="185">silence / pending speech</text>
+    <text class="conn-label" x="1112" y="185">speech</text>
 
     <!-- ============ Stage: Pre-Speech Ring Buffer ============ -->
-    <g id="stage-ring" class="stage" transform="translate(620, 310)">
+    <g id="stage-ring" class="stage" transform="translate(745, 235)">
       <rect class="stage-bg ring-bg" width="180" height="100" rx="8"/>
-      <text class="stage-title" x="90" y="20">Ring Buffer</text>
+      <text class="stage-title" x="90" y="20">Pre-Speech Ring</text>
       <text class="stage-detail" x="90" y="36">500ms pre-speech context</text>
       <!-- Bar-style fill (more readable than arc) -->
       <g transform="translate(10, 46)">
@@ -147,45 +147,63 @@
     </g>
 
     <!-- ============ Stage: ASR Buffer ============ -->
-    <g id="stage-asr-buffer" class="stage" transform="translate(850, 310)">
-      <rect class="stage-bg buffer-bg" width="130" height="100" rx="8"/>
-      <text class="stage-title" x="65" y="20">ASR Buffer</text>
-      <text class="stage-detail" x="65" y="36">Vec&lt;f32&gt;</text>
+    <g id="stage-asr-buffer" class="stage" transform="translate(980, 235)">
+      <rect class="stage-bg buffer-bg" width="220" height="115" rx="8"/>
+      <text class="stage-title" x="110" y="20">ASR Buffer</text>
+      <text class="stage-detail" x="110" y="36">Vec&lt;f32&gt; · pad on speech end</text>
       <g transform="translate(8, 46)">
-        <rect class="buffer-visual" x="0" y="0" width="114" height="18" rx="4"/>
+        <rect class="buffer-visual" x="0" y="0" width="204" height="18" rx="4"/>
         <rect id="asr-fill" class="asr-fill" x="1" y="1" width="0" height="16" rx="3"/>
       </g>
-      <text id="asr-count" class="buffer-count" x="65" y="82">0 / 8960</text>
-      <text id="asr-chunk-info" class="stage-detail" x="65" y="96">chunk: 560ms</text>
+      <text id="asr-count" class="buffer-count" x="110" y="82">0 / 8960</text>
+      <text id="asr-chunk-info" class="stage-detail" x="110" y="98">chunk: 560ms</text>
+    </g>
+
+    <!-- ============ Stage: Replay Buffer ============ -->
+    <g id="stage-replay" class="stage" transform="translate(745, 405)">
+      <rect class="stage-bg replay-bg" width="180" height="90" rx="8"/>
+      <text class="stage-title" x="90" y="20">Replay Buffer</text>
+      <text class="stage-detail" x="90" y="38">last non-empty speech chunks</text>
+      <text id="replay-status" class="stage-state" x="90" y="62">0 / 6 chunks</text>
+      <text class="stage-detail" x="90" y="78">used after empty reset</text>
     </g>
 
     <!-- ============ Stage: Nemotron ============ -->
-    <g id="stage-nemotron" class="stage" transform="translate(1010, 325)">
-      <rect class="stage-bg nemotron-bg" width="150" height="110" rx="8"/>
-      <text class="stage-title" x="75" y="20">Nemotron (ORT)</text>
-      <text class="stage-detail" x="75" y="36">parakeet-rs</text>
-      <text id="nemotron-status" class="stage-state" x="75" y="56">IDLE</text>
+    <g id="stage-nemotron" class="stage" transform="translate(1000, 405)">
+      <rect class="stage-bg nemotron-bg" width="180" height="110" rx="8"/>
+      <text class="stage-title" x="90" y="20">Nemotron</text>
+      <text class="stage-detail" x="90" y="36">parakeet-rs / ORT</text>
+      <text id="nemotron-status" class="stage-state" x="90" y="56">IDLE</text>
       <g transform="translate(8, 64)">
-        <rect class="infer-track" x="0" y="0" width="134" height="10" rx="3"/>
+        <rect class="infer-track" x="0" y="0" width="164" height="10" rx="3"/>
         <rect id="infer-progress" class="infer-progress" x="1" y="1" width="0" height="8" rx="2"/>
       </g>
-      <text id="nemotron-timing" class="stage-detail" x="75" y="92">0ms</text>
-      <text id="empty-count" class="stage-detail empty-count" x="75" y="106"></text>
+      <text id="nemotron-timing" class="stage-detail" x="90" y="92">0ms</text>
+      <text id="empty-count" class="stage-detail empty-count" x="90" y="106"></text>
     </g>
 
     <!-- ============ Stage: Text Output ============ -->
-    <g id="stage-output" class="stage" transform="translate(1000, 510)">
-      <rect class="stage-bg output-bg" width="170" height="70" rx="8"/>
-      <text class="stage-title" x="85" y="20">Tauri Event</text>
-      <text class="stage-detail" x="85" y="36">→ transcription</text>
-      <foreignObject x="5" y="40" width="160" height="28">
+    <g id="stage-output" class="stage" transform="translate(1000, 555)">
+      <rect class="stage-bg output-bg" width="180" height="80" rx="8"/>
+      <text class="stage-title" x="90" y="20">Tauri Event</text>
+      <text class="stage-detail" x="90" y="36">on_transcription(text)</text>
+      <foreignObject x="7" y="43" width="166" height="30">
         <div id="output-text" class="output-text" xmlns="http://www.w3.org/1999/xhtml"></div>
       </foreignObject>
     </g>
 
+    <!-- ============ Stage: Diagnostics ============ -->
+    <g id="stage-diag" class="stage" transform="translate(305, 500)">
+      <rect class="stage-bg diag-bg" width="215" height="90" rx="8"/>
+      <text class="stage-title" x="107" y="20">Diagnostics SQLite</text>
+      <text class="stage-detail" x="107" y="38">events + vad_events tables</text>
+      <text id="diag-status" class="stage-state" x="107" y="61">optional WAL</text>
+      <text class="stage-detail" x="107" y="78">hot toggle skips writes</text>
+    </g>
+
     <!-- ============ Decoder reset label ============ -->
-    <g id="reset-label" transform="translate(960, 360)" visibility="hidden">
-      <rect class="reset-badge" x="-50" y="-10" width="100" height="20" rx="4"/>
+    <g id="reset-label" transform="translate(865, 382)" visibility="hidden">
+      <rect class="reset-badge" x="-70" y="-10" width="140" height="20" rx="4"/>
       <text id="reset-text" class="reset-text" x="0" y="4">RESET</text>
     </g>
 

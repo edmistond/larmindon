@@ -5,13 +5,16 @@
   'use strict';
 
   // ─── Constants (matching the real system) ─────────────────────────
-  // Source of truth: larmindon-core/src/{vad.rs, settings.rs, audio_engine.rs}
+  // Source of truth: larmindon-core/src/{agc.rs, vad.rs, settings.rs, audio_engine.rs}
   const ASR_SAMPLE_RATE = 16000;
   const VAD_FRAME_SIZE = 512;          // 32ms at 16kHz
   const PRE_SPEECH_CAPACITY = 8000;    // 500ms ring buffer @ 16kHz
   const CHUNK_SIZE = 8960;             // 560ms default (CHUNK_MS setting)
   const EMPTY_RESET_THRESHOLD = 6;     // configurable in Preferences
-  const INPUT_RATE = 48000;            // hardcoded in audio_engine.rs
+  const INPUT_RATE = 48000;            // common stream rate; real stream metadata can vary
+  const CAPTURE_BUFFER_CAPACITY = INPUT_RATE * 10;
+  const CAPTURE_BUFFER_VISUAL_MAX = INPUT_RATE * 0.25;
+  const AGC_TARGET_RMS_DBFS = -20;
   // VAD hysteresis (threshold_start / threshold_end in settings)
   const VAD_THRESHOLD_START = 0.5;     // silence → speech
   const VAD_THRESHOLD_END   = 0.3;     // speech → silence
@@ -44,6 +47,7 @@
   const bufferFill = $('buffer-fill');
   const bufferCount = $('buffer-count');
   const resampleIndicator = $('resample-indicator');
+  const agcGainEl = $('agc-gain');
   const vadState = $('vad-state');
   const vadProbFill = $('vad-prob-fill');
   const ringFill = $('ring-fill');
@@ -51,12 +55,14 @@
   const ringPct = $('ring-pct');
   const asrFill = $('asr-fill');
   const asrCount = $('asr-count');
+  const replayStatus = $('replay-status');
   const nemotronStatus = $('nemotron-status');
   const nemotronTiming = $('nemotron-timing');
   const inferProgress = $('infer-progress');
   const emptyCountEl = $('empty-count');
   const outputText = $('output-text');
   const resetLabel = $('reset-label');
+  const diagStatus = $('diag-status');
   const waveformInput = $('waveform-input');
   const particlesGroup = $('particles');
 
@@ -64,10 +70,13 @@
   const conns = {
     deviceBuffer:    $('conn-device-buffer'),
     bufferResample:  $('conn-buffer-resample'),
-    resampleVad:     $('conn-resample-vad'),
+    resampleAgc:     $('conn-resample-agc'),
+    agcVad:          $('conn-agc-vad'),
     vadRing:         $('conn-vad-ring'),
     vadAsr:          $('conn-vad-asr'),
     ringAsr:         $('conn-ring-asr'),
+    asrReplay:       $('conn-asr-replay'),
+    replayNemotron:  $('conn-replay-nemotron'),
     asrNemotron:     $('conn-asr-nemotron'),
     nemotronOutput:  $('conn-nemotron-output'),
     resetLoop:       $('conn-reset-loop'),
@@ -78,11 +87,14 @@
     device:    $('stage-device'),
     buffer:    $('stage-buffer'),
     resample:  $('stage-resample'),
+    agc:       $('stage-agc'),
     vad:       $('stage-vad'),
     ring:      $('stage-ring'),
     asrBuffer: $('stage-asr-buffer'),
+    replay:    $('stage-replay'),
     nemotron:  $('stage-nemotron'),
     output:    $('stage-output'),
+    diag:      $('stage-diag'),
   };
 
   // ─── Simulation state ─────────────────────────────────────────────
@@ -93,10 +105,11 @@
   let diagEventCount = 0;
 
   let sharedBufferLevel = 0;
-  const SHARED_BUFFER_MAX = 4800;
 
   let ringBufferLevel = 0;
   let asrBufferLevel = 0;
+  let replayChunks = 0;
+  let agcGainDb = 0;
 
   let vadCurrentState = 'silence';
   let vadProb = 0;
@@ -252,9 +265,9 @@
     lastTick = timestamp;
     simTime += dt;
 
-    // 1. Audio capture fills shared buffer
-    const captureRate = INPUT_RATE * (dt / 1000) * 0.3;
-    sharedBufferLevel = Math.min(sharedBufferLevel + captureRate, SHARED_BUFFER_MAX);
+    // 1. Audio capture fills the session CaptureBuffer.
+    const captureRate = INPUT_RATE * (dt / 1000);
+    sharedBufferLevel = Math.min(sharedBufferLevel + captureRate, CAPTURE_BUFFER_CAPACITY);
 
     setStageActive(stages.device, true);
     setConnActive(conns.deviceBuffer, true);
@@ -263,14 +276,14 @@
     waveformInput.setAttribute('points', generateWaveform(amp));
 
     // Update shared buffer visual
-    const bufPct = sharedBufferLevel / SHARED_BUFFER_MAX;
-    bufferFill.setAttribute('width', Math.round(bufPct * 167));
+    const bufPct = Math.min(sharedBufferLevel / CAPTURE_BUFFER_VISUAL_MAX, 1);
+    bufferFill.setAttribute('width', Math.round(bufPct * 182));
     bufferCount.textContent = `${Math.round(sharedBufferLevel)} samples`;
 
-    // 2. Drain shared buffer → resample → VAD
+    // 2. Drain CaptureBuffer → resample → AGC → VAD.
     drainAccum += dt;
     if (drainAccum >= 30 && sharedBufferLevel > 0) {
-      const drained = Math.min(sharedBufferLevel, 1440);
+      const drained = sharedBufferLevel;
       sharedBufferLevel -= drained;
       drainAccum = 0;
 
@@ -282,8 +295,15 @@
       const resampledCount = Math.round(drained * (ASR_SAMPLE_RATE / INPUT_RATE));
       setStageActive(stages.resample, true);
       resampleIndicator.classList.add('active');
-      setConnActive(conns.resampleVad, true);
-      spawnThrottled('rs-vad', conns.resampleVad, '#22d3ee', 500, 0.2);
+      setConnActive(conns.resampleAgc, true);
+      spawnThrottled('rs-agc', conns.resampleAgc, '#22d3ee', 500, 0.2);
+
+      const targetGain = estimateAgcGainDb();
+      agcGainDb += (targetGain - agcGainDb) * 0.08;
+      agcGainEl.textContent = `${agcGainDb >= 0 ? '+' : ''}${agcGainDb.toFixed(1)} dB`;
+      setStageActive(stages.agc, true);
+      setConnActive(conns.agcVad, true);
+      spawnThrottled('agc-vad', conns.agcVad, '#34d399', 500, 0.2);
 
       // VAD frames
       vadTickAccum += resampledCount;
@@ -297,18 +317,26 @@
     } else {
       setConnActive(conns.bufferResample, sharedBufferLevel > 100);
       resampleIndicator.classList.remove('active');
+      setConnActive(conns.resampleAgc, false);
+      setConnActive(conns.agcVad, false);
     }
 
     // Update inference progress
     if (inferring) {
       const elapsed = simTime - inferStartTime;
       const pct = Math.min(elapsed / inferDuration, 1);
-      inferProgress.setAttribute('width', Math.round(132 * pct));
+      inferProgress.setAttribute('width', Math.round(162 * pct));
       if (pct >= 1) completeInference();
     }
 
     updateParticles(dt);
     animFrame = requestAnimationFrame(tick);
+  }
+
+  function estimateAgcGainDb() {
+    const targetProb = getTargetProb(simTime);
+    const simulatedRmsDb = -38 + targetProb * 24 + Math.sin(simTime * 0.0007) * 2;
+    return Math.max(-20, Math.min(30, AGC_TARGET_RMS_DBFS - simulatedRmsDb));
   }
 
   // ─── VAD processing ───────────────────────────────────────────────
@@ -440,6 +468,12 @@
     if (asrBufferLevel < CHUNK_SIZE) return;
 
     asrBufferLevel -= CHUNK_SIZE;
+    if (vadCurrentState === 'speech') {
+      replayChunks = Math.min(replayChunks + 1, EMPTY_RESET_THRESHOLD);
+      updateReplayVisual(false);
+      setConnActive(conns.asrReplay, true);
+      spawnThrottled('asr-replay', conns.asrReplay, '#facc15', 500, 0.5);
+    }
     inferring = true;
     inferStartTime = simTime;
     inferDuration = (20 + Math.random() * 60) / speed;
@@ -470,8 +504,9 @@
       logEvent('empty_chunk', `consecutive: ${consecutiveEmpty}/${EMPTY_RESET_THRESHOLD}`);
 
       if (consecutiveEmpty >= EMPTY_RESET_THRESHOLD) {
-        showReset('MID-SPEECH');
-        logEvent('reset', `mid-speech reset after ${EMPTY_RESET_THRESHOLD} empty chunks`);
+        showReset('MID-SPEECH + REPLAY');
+        replayRecentChunks();
+        logEvent('reset', `mid-speech reset; replayed ${replayChunks} recent chunk(s)`);
         consecutiveEmpty = 0;
         emptyCountEl.textContent = '';
       }
@@ -501,6 +536,20 @@
     } else {
       logEvent('silence', 'no speech to transcribe');
     }
+  }
+
+  function replayRecentChunks() {
+    setStageActive(stages.replay, true);
+    setConnActive(conns.replayNemotron, true);
+    replayStatus.textContent = `replaying ${replayChunks} chunk${replayChunks === 1 ? '' : 's'}`;
+    spawnParticle(conns.replayNemotron, '#facc15', 500);
+
+    safeTimeout(() => {
+      if (!running) return;
+      replayChunks = 0;
+      updateReplayVisual(false);
+      setConnActive(conns.replayNemotron, false);
+    }, 900 / speed);
   }
 
   // ─── Decoder reset animation ──────────────────────────────────────
@@ -542,9 +591,15 @@
 
   function updateAsrVisual() {
     const pct = Math.min(asrBufferLevel / CHUNK_SIZE, 1);
-    asrFill.setAttribute('width', Math.round(pct * 112));
+    asrFill.setAttribute('width', Math.round(pct * 202));
     asrCount.textContent = `${asrBufferLevel} / ${CHUNK_SIZE}`;
     setStageActive(stages.asrBuffer, asrBufferLevel > 0);
+  }
+
+  function updateReplayVisual(active) {
+    replayStatus.textContent = `${replayChunks} / ${EMPTY_RESET_THRESHOLD} chunks`;
+    setStageActive(stages.replay, active || replayChunks > 0);
+    setConnActive(conns.asrReplay, replayChunks > 0);
   }
 
   // ─── Full reset ───────────────────────────────────────────────────
@@ -554,6 +609,8 @@
     sharedBufferLevel = 0;
     ringBufferLevel = 0;
     asrBufferLevel = 0;
+    replayChunks = 0;
+    agcGainDb = 0;
     vadCurrentState = 'silence';
     vadProb = 0;
     speechFrameCount = 0;
@@ -572,6 +629,7 @@
     // Reset all visuals
     bufferFill.setAttribute('width', '0');
     bufferCount.textContent = '0 samples';
+    agcGainEl.textContent = '0.0 dB';
     vadState.textContent = 'SILENCE';
     vadState.setAttribute('class', 'stage-state');
     vadProbFill.setAttribute('width', '0');
@@ -580,12 +638,14 @@
     ringPct.textContent = '0%';
     asrFill.setAttribute('width', '0');
     asrCount.textContent = `0 / ${CHUNK_SIZE}`;
+    replayStatus.textContent = `0 / ${EMPTY_RESET_THRESHOLD} chunks`;
     nemotronStatus.textContent = 'IDLE';
     nemotronStatus.setAttribute('class', 'stage-state');
     nemotronTiming.textContent = '0ms';
     inferProgress.setAttribute('width', '0');
     emptyCountEl.textContent = '';
     outputText.textContent = '';
+    diagStatus.textContent = 'logging events';
     resetLabel.setAttribute('visibility', 'hidden');
 
     // Clear all connection and stage highlights
@@ -604,6 +664,7 @@
     btnStart.disabled = true;
     btnStop.disabled = false;
     logEvent('session', 'Simulation started');
+    setStageActive(stages.diag, true);
     animFrame = requestAnimationFrame(tick);
   });
 
