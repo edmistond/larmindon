@@ -17,18 +17,20 @@ The audio pipeline runs on a dedicated OS thread, communicating with the Tauri f
 ```mermaid
 graph TB
     subgraph Frontend ["Frontend (React)"]
-        UI["App.tsx<br/>Device selector, Start/Stop, transcript display"]
-        PREFS["Preferences.tsx<br/>Settings panel (separate window)"]
+        UI["App.tsx<br/>device selector, Start/Stop,<br/>transcript display"]
+        PREFS["Preferences.tsx<br/>settings panel<br/>(separate window)"]
     end
 
     subgraph Tauri ["Main Thread (Tauri)"]
-        CMD["Command handlers<br/>list_devices / start_transcription / stop_transcription<br/>switch_source / get_settings / save_settings / …"]
+        CMD["Command handlers<br/>list_devices / start_transcription / stop_transcription<br/>switch_source / save_settings / ..."]
         STATE["Managed State<br/>AudioEngineHandle { cmd_tx }<br/>Mutex&lt;Settings&gt;"]
         SELECT["Backend selection<br/>env var → PipeWire test → CPAL fallback"]
+        SINK["TauriEventSink<br/>emit transcription / errors / device events"]
     end
 
-    subgraph Engine ["Engine Thread (larmindon-core crate)"]
-        LOOP["AudioEngine::run()<br/>Command dispatch loop"]
+    subgraph Engine ["Persistent engine thread (larmindon-core)"]
+        LOOP["AudioEngine::run()<br/>mpsc Command dispatch loop"]
+        CACHE["Model cache<br/>Nemotron + VAD reused<br/>across sessions when compatible"]
     end
 
     subgraph Backend ["Audio Backend (AudioCapture trait)"]
@@ -43,59 +45,84 @@ graph TB
 
     subgraph Watcher ["PipeWire Watcher Thread<br/>(Linux only)"]
         REGISTRY["Registry listener<br/>Track device adds/removals"]
-        RECONNECT["Auto-reconnect<br/>on active device loss"]
+        RECONNECT["Auto-reconnect<br/>when active stream disappears"]
         ACTIVE_INFO[("ActiveSessionInfo<br/>Arc&lt;Mutex&gt;<br/>device_id, app_name")]
     end
 
     subgraph Session ["Session (per start_transcription)"]
-        BUFFER[("Shared buffer<br/>Arc&lt;Mutex&lt;VecDeque&lt;f32&gt;&gt;&gt;")]
+        STREAM["StartedAudioStream<br/>metadata: sample_rate, channels, format"]
+        BUFFER[("CaptureBuffer<br/>Arc&lt;Mutex&lt;...&gt;&gt;<br/>bounded mono f32, 10s cap")]
 
         subgraph Processing ["Processing Thread (larmindon-core crate)"]
-            DRAIN["Drain buffer"]
-            RESAMPLE{"Needs resample?"}
+            SETTINGS_RX["settings_rx<br/>hot-reload VAD, AGC,<br/>reset thresholds"]
+            DRAIN["drain_all()<br/>samples + dropped count"]
+            RESAMPLE{"Input rate<br/>!= 16kHz?"}
             RUBATO["Resample to 16kHz<br/>(rubato FftFixedIn)"]
-            VAD["VAD gating<br/>Silero ONNX · 512-sample frames<br/>hysteresis: start 0.5 / end 0.3"]
+            AGC["AGC<br/>optional level normalization<br/>target RMS / attack / release"]
+            VAD_LEFT["VAD leftovers<br/>carry sub-frame samples"]
+            VAD["Silero VAD<br/>512-sample frames + 64-sample context<br/>hysteresis: start 0.5 / end 0.3"]
             RING["Pre-speech<br/>ring buffer<br/>(500ms @ 16kHz)"]
             ASR_BUF["ASR buffer<br/>Vec&lt;f32&gt;"]
-            ASR["Nemotron inference<br/>(parakeet-rs)<br/>configurable chunk size"]
-            RESET{"Decoder reset?"}
+            ASR["Nemotron inference<br/>(parakeet-rs)<br/>80 / 160 / 560 / 1120ms chunks"]
+            REPLAY["ReplayBuffer<br/>recent live speech chunks<br/>for mid-speech reset recovery"]
+            RESET{"Reset condition?"}
+            TEXT["Non-empty text"]
         end
     end
 
     subgraph Diagnostics ["Diagnostics (opt-in)"]
-        DB[("SQLite<br/>~/.config/larmindon/larmindon_diag.sqlite<br/>sessions / events / vad_events")]
+        DIAG_FLAG["Arc&lt;AtomicBool&gt;<br/>live diagnostics toggle"]
+        DB[("SQLite WAL<br/>~/.config/larmindon/larmindon_diag.sqlite<br/>sessions / events / vad_events")]
     end
 
     UI -- "invoke()" --> CMD
-    PREFS -- "invoke() / emit('settings-changed')" --> CMD
+    PREFS -- "invoke('save_settings')" --> CMD
     CMD -- "mpsc::Sender&lt;Command&gt;" --> LOOP
-    CMD -- "settings_tx (hot-reload)" --> LOOP
+    CMD -- "mutates" --> STATE
+    CMD -- "emit('settings-changed')" --> UI
+    CMD -- "emit('settings-changed')" --> PREFS
     SELECT -. "startup" .-> CPAL_BE
     SELECT -. "startup" .-> PW_BE
+    STATE -- "initial settings" --> LOOP
+    STATE -- "diagnostics_enabled" --> DIAG_FLAG
+    LOOP -- "Command::UpdateSettings" --> SETTINGS_RX
     LOOP -- "start_session()" --> CPAL_CAP
     LOOP -- "start_session()" --> PW_CAP
-    CPAL_CAP -- "push_mono()" --> BUFFER
-    PW_CAP -- "push_mono()" --> BUFFER
+    LOOP -- "compatible stop/start" --> CACHE
+    CPAL_CAP -- "StartedAudioStream + metadata" --> STREAM
+    PW_CAP -- "StartedAudioStream + metadata" --> STREAM
+    CPAL_CAP -- "push mono f32" --> BUFFER
+    PW_CAP -- "push mono f32" --> BUFFER
     REGISTRY -- "device removed" --> RECONNECT
     RECONNECT -- "Command::Reconnect" --> LOOP
-    REGISTRY -- "emit('devices-changed')" --> UI
+    REGISTRY -- "on_devices_changed()" --> SINK
+    SINK -- "emit('devices-changed')" --> UI
     LOOP -- "writes" --> ACTIVE_INFO
     ACTIVE_INFO -- "reads" --> REGISTRY
     BUFFER --> DRAIN
     DRAIN --> RESAMPLE
-    RESAMPLE -- "Yes" --> RUBATO --> VAD
-    RESAMPLE -- "No" --> VAD
+    RESAMPLE -- "yes" --> RUBATO --> AGC
+    RESAMPLE -- "no" --> AGC
+    AGC --> VAD_LEFT --> VAD
     VAD -- "Silence" --> RING
-    VAD -- "SpeechStarted" --> ASR_BUF
-    RING -- "pre_speech_samples (drain on speech start)" --> ASR_BUF
+    VAD -- "SpeechStarted" --> RING
+    RING -- "drain pre_speech_samples" --> ASR_BUF
+    VAD -- "current frame" --> ASR_BUF
     VAD -- "SpeechContinues" --> ASR_BUF
-    VAD -- "SpeechEnded<br/>(pad partial chunk + flush)" --> ASR_BUF
+    VAD -- "SpeechEnded<br/>append final frame + pad partial chunk" --> ASR_BUF
     ASR_BUF -- "chunk_size samples" --> ASR
-    ASR -- "text" --> RESET
-    RESET -- "Sentence punctuation<br/>or ≥6 empty chunks (mid-speech)<br/>or speech end" --> ASR
-    ASR -- "emit('transcription')" --> UI
-    ASR -- "log timing + text" --> DB
-    VAD -- "log state changes" --> DB
+    ASR_BUF -- "live speech chunks" --> REPLAY
+    ASR -- "text + timing" --> RESET
+    RESET -- "punctuation" --> ASR
+    RESET -- "speech end after queued chunks" --> ASR
+    RESET -- "empty threshold while speech" --> REPLAY
+    REPLAY -- "reset model, replay recent chunks" --> ASR
+    RESET -- "non-empty" --> TEXT
+    TEXT -- "on_transcription()" --> SINK
+    SINK -- "emit('transcription')" --> UI
+    DIAG_FLAG -. "gates writes" .-> DB
+    ASR -- "events: timing, text preview,<br/>chunk source live/replay" --> DB
+    VAD -- "vad_events: speech_start,<br/>speech_end, reset metrics" --> DB
 
     style Frontend fill:#e1f5fe
     style Tauri fill:#fff3e0
@@ -113,16 +140,17 @@ graph TB
 
 - **Commands** flow down: React `invoke()` → Tauri command handler → `mpsc` channel → Engine thread
 - **Events** flow up: Processing thread → `app_handle.emit()` → React event listener
-- **Audio** flows through a shared buffer: audio backend callback pushes mono f32 samples, processing thread drains
+- **Audio** flows through `CaptureBuffer`: audio backend callback pushes bounded mono f32 samples, processing thread drains all available samples and tracks drops
 - **Backend selection** at startup: `LARMINDON_AUDIO_BACKEND` env var → test PipeWire availability → fall back to CPAL. Only one backend is active per session.
 - **Device monitoring** (Linux/PipeWire only): a watcher thread monitors the PipeWire registry for device adds/removals, emits `devices-changed` events to the frontend, and sends `Command::Reconnect` to the engine if the active device disappears
 - **Shared session state**: the engine writes `ActiveSessionInfo` (device ID, app name, device type) to shared state; the watcher reads it to detect when the active device is lost
-- **Decoder resets** happen at three points: speech end (VAD), sentence punctuation (`. ? !`), or stuck-state heuristic (configurable, default 6 consecutive empty chunks)
+- **Settings hot-reload** uses `Command::UpdateSettings` to update VAD thresholds, AGC parameters, diagnostics toggling, punctuation reset, and empty-reset threshold without restarting the session
+- **Decoder resets** happen at three points: speech end after queued chunks are consumed, sentence punctuation (`. ? !`), or the stuck-state heuristic (configurable, default 6 consecutive empty chunks). Mid-speech reset replays recent live speech chunks after resetting the model.
 - **All threads are OS threads** — no async runtime (tokio, etc.)
 
 #### Interactive visualization
 
-An animated browser-based visualization of the pipeline is available in [`visualization/`](visualization/index.html) — open `visualization/index.html` in any browser (no build step). It simulates audio data flowing through the shared buffer, resampler, VAD, ring buffer, and Nemotron inference stages with configurable scenarios (normal speech, silence, intermittent, stuck decoder).
+An animated browser-based visualization of the pipeline is available in [`visualization/`](visualization/index.html) — open `visualization/index.html` in any browser (no build step). It simulates audio data flowing through capture, resampling, AGC, VAD, pre-speech buffering, ASR chunking, replay recovery, diagnostics, and Nemotron inference stages with configurable scenarios (normal speech, silence, intermittent, stuck decoder).
 
 ## Prerequisites
 
