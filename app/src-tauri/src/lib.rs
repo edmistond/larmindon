@@ -170,6 +170,15 @@ fn create_audio_backend() -> Box<dyn larmindon_core::audio_capture::AudioCapture
                 #[cfg(not(all(target_os = "linux", feature = "pipewire")))]
                 panic!("PipeWire backend requested but feature not enabled. On Linux, rebuild with --features pipewire");
             }
+            "wasapi" | "windows-composite" => {
+                #[cfg(all(target_os = "windows", feature = "cpal"))]
+                {
+                    println!("Using Windows composite backend (via LARMINDON_AUDIO_BACKEND env var)");
+                    return larmindon_core::audio_capture::windows_composite::create_backend();
+                }
+                #[cfg(not(all(target_os = "windows", feature = "cpal")))]
+                panic!("WASAPI process backend is only available on Windows builds with the 'cpal' feature");
+            }
             _ => {
                 eprintln!(
                     "Unknown LARMINDON_AUDIO_BACKEND={backend}, using default backend selection"
@@ -202,8 +211,17 @@ fn create_audio_backend() -> Box<dyn larmindon_core::audio_capture::AudioCapture
         }
     }
 
-    // Default to CPAL
-    #[cfg(feature = "cpal")]
+    // On Windows, default to the composite backend so per-application sources
+    // show up alongside cpal devices in the picker.
+    #[cfg(all(target_os = "windows", feature = "cpal"))]
+    {
+        println!("Using Windows composite backend (cpal + WASAPI process loopback)");
+        return larmindon_core::audio_capture::windows_composite::create_backend();
+    }
+
+    // Default to CPAL (skipped on Windows when the composite backend above has
+    // already returned).
+    #[cfg(all(feature = "cpal", not(target_os = "windows")))]
     {
         println!("Using CPAL backend");
         larmindon_core::audio_capture::cpal::create_backend()

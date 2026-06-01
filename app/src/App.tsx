@@ -9,6 +9,9 @@ interface AudioDevice {
   id: string;
   name: string;
   is_default: boolean;
+  // "Application" | "Input" | "Monitor" (from larmindon-core DeviceType)
+  device_type?: string;
+  application_name?: string;
 }
 
 interface Settings {
@@ -286,11 +289,26 @@ function App() {
           }}
         >
           {devices.length === 0 && <option value="">No devices found</option>}
-          {devices.map((dev) => (
-            <option key={dev.id} value={dev.id}>
-              {dev.name}{dev.is_default ? " (default)" : ""}
-            </option>
-          ))}
+          {[
+            { label: "Applications", type: "Application" },
+            { label: "Inputs", type: "Input" },
+            { label: "System Audio", type: "Monitor" },
+          ].map((group) => {
+            const groupDevices = devices.filter(
+              (d) => (d.device_type ?? "Input") === group.type
+            );
+            if (groupDevices.length === 0) return null;
+            return (
+              <optgroup key={group.type} label={group.label}>
+                {groupDevices.map((dev) => (
+                  <option key={dev.id} value={dev.id}>
+                    {dev.application_name ?? dev.name}
+                    {dev.is_default ? " (default)" : ""}
+                  </option>
+                ))}
+              </optgroup>
+            );
+          })}
         </select>
 
         <button
