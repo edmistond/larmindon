@@ -102,11 +102,6 @@ fn switch_source(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-async fn open_caption_overlay(app_handle: tauri::AppHandle) -> Result<(), String> {
-    show_caption_overlay(&app_handle)
-}
-
 fn show_caption_overlay(app_handle: &tauri::AppHandle) -> Result<(), String> {
     if let Some(window) = app_handle.get_webview_window(CAPTION_OVERLAY_LABEL) {
         window.show().map_err(|e| e.to_string())?;
@@ -378,9 +373,7 @@ pub fn run() {
                 .item(&toggle_overlay_item)
                 .build()?;
             let menu = Menu::with_items(handle, &[&app_menu, &edit_menu, &window_menu])?;
-            app.get_webview_window("main")
-                .expect("main window should exist during setup")
-                .set_menu(menu)?;
+            app.set_menu(menu)?;
             // Load settings: file -> env overrides
             let settings = Settings::load().with_env_overrides();
             println!(
@@ -466,7 +459,6 @@ pub fn run() {
             start_transcription,
             stop_transcription,
             switch_source,
-            open_caption_overlay,
             get_settings,
             save_settings,
             get_default_settings,

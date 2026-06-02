@@ -20,7 +20,7 @@ tauri-build = { version = "2.6.1", features = [] }
 
 [dependencies]
 larmindon-core = { git = "https://github.com/edmistond/larmindon-core.git", branch = "main" }
-tauri = { version = "2.11.1", features = [] }
+tauri = { version = "2.11.1", features = ["macos-private-api"] }
 tauri-plugin-opener = "2.5.4"
 tauri-plugin-dialog = "2.7.1"
 serde = { version = "1", features = ["derive"] }
