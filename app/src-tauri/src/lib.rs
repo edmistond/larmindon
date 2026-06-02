@@ -10,7 +10,9 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use tauri::menu::{Menu, MenuEvent, MenuItem, SubmenuBuilder};
-use tauri::{Emitter, Manager, State};
+use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
+
+const CAPTION_OVERLAY_LABEL: &str = "caption_overlay";
 
 // ---------------------------------------------------------------------------
 // Tauri event sink — bridges EngineEventSink to Tauri's event system
@@ -101,6 +103,51 @@ fn switch_source(
 }
 
 #[tauri::command]
+async fn open_caption_overlay(app_handle: tauri::AppHandle) -> Result<(), String> {
+    show_caption_overlay(&app_handle)
+}
+
+fn show_caption_overlay(app_handle: &tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app_handle.get_webview_window(CAPTION_OVERLAY_LABEL) {
+        window.show().map_err(|e| e.to_string())?;
+        window.set_focus().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    // Window creation on Windows is safer from async commands or separate
+    // threads. This helper is used by both an async command and the menu path.
+    WebviewWindowBuilder::new(
+        app_handle,
+        CAPTION_OVERLAY_LABEL,
+        WebviewUrl::App("overlay.html".into()),
+    )
+    .title("Larmindon Captions")
+    .inner_size(760.0, 180.0)
+    .min_inner_size(360.0, 96.0)
+    .resizable(true)
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .build()
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+fn toggle_caption_overlay(app_handle: &tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app_handle.get_webview_window(CAPTION_OVERLAY_LABEL) {
+        if window.is_visible().map_err(|e| e.to_string())? {
+            window.hide().map_err(|e| e.to_string())
+        } else {
+            window.show().map_err(|e| e.to_string())?;
+            window.set_focus().map_err(|e| e.to_string())
+        }
+    } else {
+        show_caption_overlay(app_handle)
+    }
+}
+
+#[tauri::command]
 fn get_settings(current_settings: State<'_, Mutex<Settings>>) -> Result<Settings, String> {
     let settings = current_settings.lock().map_err(|e| e.to_string())?;
     Ok(settings.clone())
@@ -173,7 +220,9 @@ fn create_audio_backend() -> Box<dyn larmindon_core::audio_capture::AudioCapture
             "wasapi" | "windows-composite" => {
                 #[cfg(all(target_os = "windows", feature = "cpal"))]
                 {
-                    println!("Using Windows composite backend (via LARMINDON_AUDIO_BACKEND env var)");
+                    println!(
+                        "Using Windows composite backend (via LARMINDON_AUDIO_BACKEND env var)"
+                    );
                     return larmindon_core::audio_capture::windows_composite::create_backend();
                 }
                 #[cfg(not(all(target_os = "windows", feature = "cpal")))]
@@ -266,6 +315,14 @@ pub fn run() {
             "preferences" => {
                 let _ = app.emit("open-preferences", ());
             }
+            "toggle_caption_overlay" => {
+                let app_handle = app.clone();
+                thread::spawn(move || {
+                    if let Err(e) = toggle_caption_overlay(&app_handle) {
+                        eprintln!("Failed to toggle caption overlay: {}", e);
+                    }
+                });
+            }
             _ => {}
         })
         .setup(|app| {
@@ -292,6 +349,13 @@ pub fn run() {
                 true,
                 Some("CmdOrCtrl+,"),
             )?;
+            let toggle_overlay_item = MenuItem::with_id(
+                handle,
+                "toggle_caption_overlay",
+                "Show/Hide Overlay",
+                true,
+                Some("CmdOrCtrl+Shift+O"),
+            )?;
             let app_menu = SubmenuBuilder::new(handle, "Larmindon")
                 .about(None)
                 .separator()
@@ -310,8 +374,13 @@ pub fn run() {
                 .separator()
                 .item(&preferences_item)
                 .build()?;
-            let menu = Menu::with_items(handle, &[&app_menu, &edit_menu])?;
-            app.set_menu(menu)?;
+            let window_menu = SubmenuBuilder::new(handle, "Window")
+                .item(&toggle_overlay_item)
+                .build()?;
+            let menu = Menu::with_items(handle, &[&app_menu, &edit_menu, &window_menu])?;
+            app.get_webview_window("main")
+                .expect("main window should exist during setup")
+                .set_menu(menu)?;
             // Load settings: file -> env overrides
             let settings = Settings::load().with_env_overrides();
             println!(
@@ -397,6 +466,7 @@ pub fn run() {
             start_transcription,
             stop_transcription,
             switch_source,
+            open_caption_overlay,
             get_settings,
             save_settings,
             get_default_settings,

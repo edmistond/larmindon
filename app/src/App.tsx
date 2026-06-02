@@ -231,6 +231,14 @@ function App() {
     });
   }
 
+  async function openCaptionOverlay() {
+    try {
+      await invoke("open_caption_overlay");
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key === ",") {
@@ -272,6 +280,14 @@ function App() {
           title="Preferences (Ctrl+,)"
         >
           &#x2699;
+        </button>
+
+        <button
+          className="overlay-btn"
+          onClick={openCaptionOverlay}
+          title="Open caption overlay"
+        >
+          Overlay
         </button>
 
         <select

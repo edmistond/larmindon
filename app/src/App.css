@@ -142,6 +142,15 @@ button {
     cursor: not-allowed;
 }
 
+.overlay-btn {
+    background-color: var(--color-surface);
+    white-space: nowrap;
+}
+
+.overlay-btn:hover {
+    border-color: var(--color-border-hover);
+}
+
 .error {
     color: var(--color-error);
     margin: 0 0 0.5rem 0;
