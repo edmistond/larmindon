@@ -2550,6 +2550,7 @@ dependencies = [
  "dark-light",
  "fontconfig",
  "larmindon-core",
+ "larmindon-engine-nemotron",
  "serde",
  "serde_json",
  "tauri",
@@ -2567,7 +2568,6 @@ dependencies = [
  "libspa",
  "ndarray",
  "ort",
- "parakeet-rs",
  "pipewire",
  "rubato",
  "rusqlite",
@@ -2575,6 +2575,17 @@ dependencies = [
  "serde_json",
  "wasapi",
  "windows 0.62.2",
+]
+
+[[package]]
+name = "larmindon-engine-nemotron"
+version = "0.1.0"
+dependencies = [
+ "larmindon-core",
+ "parakeet-rs",
+ "rusqlite",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

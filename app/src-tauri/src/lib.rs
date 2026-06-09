@@ -2,6 +2,7 @@ mod font_enumeration;
 
 use larmindon_core::audio_capture::{ActiveSessionInfo, AudioDevice};
 use larmindon_core::audio_engine::{AudioEngine, Command};
+use larmindon_core::engine::registry::EngineRegistry;
 use larmindon_core::settings::Settings;
 use larmindon_core::EngineEventSink;
 use serde::Serialize;
@@ -435,12 +436,20 @@ pub fn run() {
                 }
             }
 
+            // Register the speech engines this build was compiled with.
+            let mut registry = EngineRegistry::new();
+            #[cfg(feature = "engine-nemotron")]
+            registry.register(Arc::new(larmindon_engine_nemotron::NemotronFactory));
+            let registry = Arc::new(registry);
+
             let session_info_for_engine = active_session_info.clone();
+            let registry_for_engine = registry.clone();
             let engine_thread = thread::spawn(move || {
                 let engine = AudioEngine::new(
                     event_sink,
                     cmd_rx,
                     capture_backend,
+                    registry_for_engine,
                     session_info_for_engine,
                     diag_enabled,
                 );
