@@ -1,7 +1,9 @@
 # AGENTS.md
 
 Real-time speech-to-text desktop app: Tauri v2 backend (Rust) + React frontend.
-Uses Nemotron streaming ASR via parakeet-rs.
+Pluggable speech engines from the larmindon-core workspace: Nemotron
+(parakeet-rs, append-only finals) and April ASR (april-asr, streaming
+partial/final segments).
 
 ## Build Commands
 - Use `npm run tauri build` (not `cargo tauri build`) for Tauri builds
@@ -40,35 +42,54 @@ cd app/src-tauri && cargo check
 
 ## Setup Requirements
 
-* *Model Path* * : Set via Preferences window (Cmd/Ctrl+, or ⚙️ button) or in
- `~/.config/larmindon/settings.json` . Default is `~/projects/prs-nemotron/` .
- Download the
- [Nemotron streaming model files](https://huggingface.co/altunenes/parakeet-rs/tree/main/nemotron-speech-streaming-en-0.6b)
- to your chosen path.
+* **Nemotron model**: set the model directory in Preferences (Cmd/Ctrl+, or ⚙️
+  button) under the engine section, or in `~/.config/larmindon/settings.json`
+  (`engines.nemotron.model_path`). Download the
+  [Nemotron streaming model files](https://huggingface.co/altunenes/parakeet-rs/tree/main/nemotron-speech-streaming-en-0.6b).
+* **April model**: a single `.april` file (e.g.
+  [aprilv0_en-us.april](https://april.sapples.net/aprilv0_en-us.april));
+  set `engines.april.model_path` via Preferences.
+* **April build/runtime deps**: cmake + libclang at build time;
+  `brew install onnxruntime` at runtime (macOS). The app build script keeps a
+  locally re-signed copy at `~/.config/larmindon/runtime/libonnxruntime.dylib`
+  because Gatekeeper blocks homebrew's foreign-ad-hoc-signed dylib, and
+  rewrites the built libaprilasr to load that copy.
 
 ## Verification
 
-No test suite exists. Verify changes by:
+No frontend test suite exists (the core workspace has unit tests). Verify
+changes by:
 
 1. Running the app and checking live transcription output
 2. Querying `larmindon_diag.sqlite` (project root) for timing/events data
 
 ## Settings & Environment Variables
 
-Settings are stored in `~/.config/larmindon/settings.json` and editable via the
-Preferences window. Environment variables override saved settings at runtime:
+Settings are stored in `~/.config/larmindon/settings.json` (format v2:
+shared fields at the top level, per-engine config under `engines.<id>`,
+selection via `active_engine`; v1 flat files are migrated automatically with a
+`settings.json.v1.bak` backup). Environment variables override saved settings
+at runtime:
 
 | Variable | Values | Default | Purpose |
 |----------|--------|---------|---------|
+| `LARMINDON_ENGINE` | nemotron, april | saved value | Active speech engine |
 | `CHUNK_MS` | 80, 160, 560, 1120 | 560 | Nemotron ASR chunk size |
-| `INTRA_THREADS` | 1+ | 2 | ONNX intra-op parallelism |
-| `INTER_THREADS` | 1+ | 1 | ONNX inter-op parallelism |
+| `INTRA_THREADS` | 1-32 | 2 | Nemotron ONNX intra-op parallelism |
+| `INTER_THREADS` | 1-32 | 1 | Nemotron ONNX inter-op parallelism |
 | `PUNCTUATION_RESET` | 0/false/no, 1/true/yes | true | Reset decoder at sentence punctuation |
 | `LARMINDON_AUDIO_BACKEND` | cpal, pipewire | auto | Force audio backend (Linux) |
+| `ORT_DYLIB_PATH` | path | auto-discovered | ONNX Runtime dylib (load-dynamic builds) |
+
+Engine env overrides are declared by each engine's `ConfigField::env_var`
+descriptor in its crate — adding one there makes it work automatically.
 
 Example: `CHUNK_MS=160 INTRA_THREADS=1 npm run tauri dev`
 
-## Feature Flags (Hardware Acceleration)
+## Feature Flags
+
+Engines are compile-time features (both on by default): `engine-nemotron`,
+`engine-april`. Hardware acceleration (Nemotron only):
 
 ```sh
 npm run tauri dev -- -- --features webgpu    # macOS (Metal via WebGPU)
@@ -81,9 +102,13 @@ It skips `src-tauri/webgpu.conf.json`, so the `.app` will link `@rpath/libwebgpu
 without bundling that dylib into `Contents/Frameworks`.
 
 Note: GPU acceleration is experimental; CPU inference is default. When adding a new
-execution provider feature flag in `Cargo.toml`, you must also wire it up in
-`audio_engine.rs` via `ExecutionConfig::with_execution_provider()` — the feature flag
-alone only makes the provider available at compile time.
+execution provider feature flag, wire it through `larmindon-engine-nemotron`
+(`ExecutionConfig::with_execution_provider()` in its `begin_session`) — the
+feature flag alone only makes the provider available at compile time.
+
+Note: including `engine-april` flips the `ort` crate (used by VAD and
+parakeet-rs) to dynamic loading of a single shared libonnxruntime — see the
+larmindon-core AGENTS.md for details.
 
 ## Platform Gotchas
 
@@ -99,38 +124,63 @@ Main thread (Tauri)
   └─ Engine thread (mpsc command dispatch)
        ├─ CPAL audio callback → pushes mono f32 to shared buffer
        └─ Processing thread (per session)
-            ├─ Drains buffer → resample? → VAD → ASR → emit event
+            ├─ Drains buffer → resample? → AGC → VAD → SpeechEngine → segment events
+                 └─ (April only) worker thread owning the !Send model/session
 ```
 
 - No async/tokio — all OS threads
 - Communication: `std::sync::mpsc` channels + `Arc<AtomicBool>` stop flags
 
+### Engine Abstraction (larmindon-core workspace)
+
+- `SpeechEngine` trait: VAD-gated `feed(samples)`, `on_speech_start/end`,
+  non-blocking `poll()` for engines whose results arrive asynchronously.
+- Results are `SegmentUpdate { segment_id, text, is_final }`. Transient
+  segments (`is_final: false`) are replaced wholesale by later updates with
+  the same id; Nemotron only ever emits finals, April emits partial→final.
+- `EngineFactory`/`EngineRegistry`: each engine declares an
+  `EngineDescriptor` with typed config fields; Preferences renders the engine
+  section dynamically from it. Engine instances (and their loaded models) are
+  cached across sessions keyed by engine id + factory cache key; switching
+  engines requires Stop/Start, not an app restart.
+
 ### Key Files
 
 | File | Purpose |
 |------|---------|
-| `app/src-tauri/src/audio_engine.rs` | Core processing loop, VAD + ASR orchestration, diagnostics logging |
-| `app/src-tauri/src/vad.rs` | Silero VAD wrapper with speech/silence state machine |
-| `app/src-tauri/src/lib.rs` | Tauri setup, command handlers, engine thread spawn |
-| `app/src-tauri/src/settings.rs` | Settings persistence, env var overrides, validation |
-| `app/src/App.tsx` | Main frontend (device selector, transcript display) |
-| `app/src/Preferences.tsx` | Preferences window (model path, chunk size, fonts, theme) |
+| `larmindon-core/crates/larmindon-core/src/audio_engine.rs` | Processing loop: drain → resample → AGC → VAD → engine dispatch |
+| `larmindon-core/crates/larmindon-core/src/engine/` | SpeechEngine trait, registry/descriptors, segment id tracker |
+| `larmindon-core/crates/larmindon-engine-nemotron/src/lib.rs` | Nemotron engine: chunking, punctuation/stuck-decoder resets |
+| `larmindon-core/crates/larmindon-engine-april/src/lib.rs` | April engine: worker thread, partial/final mapping |
+| `larmindon-core/crates/larmindon-core/src/settings.rs` | Settings v2 persistence, migration, validation |
+| `app/src-tauri/src/lib.rs` | Tauri setup, registry wiring, command handlers |
+| `app/src-tauri/build.rs` | rpaths + locally-signed libonnxruntime copy for April |
+| `app/src/App.tsx` | Main frontend (device selector, segment-based transcript) |
+| `app/src/CaptionOverlay.tsx` | Always-on-top caption overlay (segment-based rolling window) |
+| `app/src/Preferences.tsx` | Preferences window (engine selector + descriptor-driven fields) |
 
 ### Frontend ↔ Backend Interface
 
-**Commands** (invoke from React): `list_devices`, `start_transcription(device_id)`, `stop_transcription`, `switch_source(device_id)`, `get_settings`, `save_settings`, `get_default_settings`, `get_system_theme`, `get_system_fonts`
+**Commands** (invoke from React): `list_devices`, `list_engines`, `start_transcription(device_id)`, `stop_transcription`, `switch_source(device_id)`, `get_settings`, `save_settings`, `get_default_settings`, `get_system_theme`, `get_system_fonts`
 
-**Events** (emit to React): `transcription { text }`, `transcription-error { text }`, `source-switched { device_id }`, `settings-changed { settings }`, `clear-transcript`, `copy-transcript`, `devices-changed`, `open-preferences`
+**Events** (emit to React): `transcription-update { segment_id, text, is_final }`, `transcription-error { text }`, `source-switched { device_id }`, `settings-changed { settings }`, `clear-transcript`, `copy-transcript`, `devices-changed`, `open-preferences`
+
+Transient segments render dimmed (`.transcript .transient`) in the main
+window and update in place; the caption overlay renders them uniformly and
+only evicts finalized segments from its rolling window.
 
 ### Windows
 
-Two webview windows: `main` (transcription UI) and `preferences` (settings panel). Defined in `capabilities/default.json`.
+Two webview windows: `main` (transcription UI) and `preferences` (settings panel), plus the `caption_overlay` created on demand. Defined in `capabilities/default.json`.
 
-## Decoder Behavior (Hard-Won Context)
+## Nemotron Decoder Behavior (Hard-Won Context)
 
-- **Mid-speech reset**: If Nemotron produces ≥`empty_reset_threshold` (default: 6) consecutive empty chunks during VAD-detected speech, the decoder resets to recover from stuck states. Configurable in Preferences.
+Lives in `larmindon-engine-nemotron`; these are Nemotron-specific workarounds,
+not shared pipeline behavior:
+
+- **Mid-speech reset**: If Nemotron produces ≥`empty_reset_threshold` (default: 6) consecutive empty chunks during VAD-detected speech, the decoder resets and replays buffered chunks to recover from stuck states. Configurable in Preferences.
 - **Punctuation reset**: Decoder resets after `.`, `?`, `!` (excluding `...` and decimals) when enabled (default). Gives clean slate at sentence boundaries.
-- **Pre-speech ring buffer**: 500ms audio retained before speech onset for ASR context.
+- **Pre-speech ring buffer** (shared, in core VAD): 500ms audio retained before speech onset for ASR context.
 
 ## PipeWire Notes (Linux)
 
@@ -141,8 +191,8 @@ Two webview windows: `main` (transcription UI) and `preferences` (settings panel
 ## Diagnostics
 
 SQLite database at `larmindon_diag.sqlite` (project root). Tables:
-- `sessions` — per-transcription session metadata
-- `events` — per-chunk timing (inference_ms, vad_ms, resample_ms, iteration_ms), text preview
-- `vad_events` — speech_start, speech_end, mid_speech_reset, punctuation_reset events
+- `sessions` — per-transcription session metadata (incl. `engine`; `chunk_size` is NULL for non-chunk engines)
+- `events` — per-chunk `transcribe` rows (inference_ms, text preview) from the engine, per-drain `feed` rows (drain/vad/resample/iteration timing) from the loop
+- `vad_events` — speech_start, speech_end (core), mid_speech_reset, punctuation_reset (nemotron)
 
 See README.md for query examples.

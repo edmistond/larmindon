@@ -18,6 +18,7 @@ interface Settings {
   font_family: string;
   font_size_px: number;
   theme_mode: string;
+  active_engine: string;
 }
 
 interface TranscriptionUpdate {
@@ -65,11 +66,21 @@ function App() {
   // let its next update resurrect it: drop updates for ids seen before clear.
   const minAcceptedIdRef = useRef(0);
   const lastSeenIdRef = useRef(-1);
-  const [fontSettings, setFontSettings] = useState<Settings>({
+  const [fontSettings, setFontSettings] = useState<Omit<Settings, "active_engine">>({
     font_family: "",
     font_size_px: 0,
     theme_mode: "dark",
   });
+  const [engineName, setEngineName] = useState("");
+
+  async function refreshEngineName(activeEngine: string) {
+    try {
+      const engines = await invoke<{ id: string; name: string }[]>("list_engines");
+      setEngineName(engines.find((e) => e.id === activeEngine)?.name ?? activeEngine);
+    } catch {
+      setEngineName(activeEngine);
+    }
+  }
 
   async function refreshDevices() {
     const devs = await invoke<AudioDevice[]>("list_devices");
@@ -187,6 +198,7 @@ function App() {
       // Cache settings for immediate access
       localStorage.setItem('larmindon_settings', JSON.stringify(s));
       await applyTheme(s.theme_mode);
+      await refreshEngineName(s.active_engine);
     }
 
     initTheme();
@@ -200,6 +212,7 @@ function App() {
       // Cache settings for immediate access
       localStorage.setItem('larmindon_settings', JSON.stringify(event.payload));
       await applyTheme(event.payload.theme_mode);
+      await refreshEngineName(event.payload.active_engine);
     });
 
     return () => {
@@ -397,6 +410,12 @@ function App() {
       </div>
 
       {error && <p className="error">{error}</p>}
+
+      {engineName && (
+        <p className="engine-status" title="Active speech engine (change in Preferences)">
+          Engine: {engineName}
+        </p>
+      )}
 
       <div
         className="transcript"
