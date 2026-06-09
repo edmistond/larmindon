@@ -6,12 +6,9 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import "./Preferences.css";
 
 interface Settings {
-  model_path: string;
-  chunk_ms: number;
-  intra_threads: number;
-  inter_threads: number;
-  punctuation_reset: boolean;
-  empty_reset_threshold: number;
+  version: number;
+  active_engine: string;
+  engines: Record<string, Record<string, unknown>>;
   font_family: string;
   font_size_px: number;
   theme_mode: string;
@@ -26,7 +23,30 @@ interface Settings {
   agc_release_ms: number;
 }
 
-const VALID_CHUNK_MS = [80, 160, 560, 1120];
+/** Mirrors larmindon-core's ConfigField; FieldType is flattened in via its
+ * "kind" tag, so the type-specific properties are optional here. */
+interface ConfigField {
+  key: string;
+  label: string;
+  kind: "bool" | "int" | "float" | "enum" | "path" | "text" | "secret";
+  min?: number;
+  max?: number;
+  step?: number;
+  options?: { value: number | string; label: string }[];
+  directory?: boolean;
+  default: unknown;
+  env_var: string | null;
+  help: string | null;
+}
+
+interface EngineDescriptor {
+  id: string;
+  name: string;
+  kind: "local" | "cloud";
+  emits_partials: boolean;
+  config_fields: ConfigField[];
+}
+
 const THEME_OPTIONS = [
   { value: "dark", label: "Dark" },
   { value: "light", label: "Light" },
@@ -35,6 +55,7 @@ const THEME_OPTIONS = [
 
 function Preferences() {
   const [settings, setSettings] = useState<Settings | null>(null);
+  const [engines, setEngines] = useState<EngineDescriptor[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
@@ -46,6 +67,7 @@ function Preferences() {
 
   useEffect(() => {
     loadSettings();
+    loadEngines();
     loadFonts();
 
     // Listen for settings changes from other windows
@@ -59,6 +81,14 @@ function Preferences() {
       unlisten.then((fn) => fn());
     };
   }, []);
+
+  async function loadEngines() {
+    try {
+      setEngines(await invoke<EngineDescriptor[]>("list_engines"));
+    } catch (e) {
+      console.error("Failed to load engine list:", e);
+    }
+  }
 
   async function loadFonts() {
     setIsLoadingFonts(true);
@@ -76,13 +106,13 @@ function Preferences() {
 
   async function applyTheme(themeMode: string) {
     let effectiveTheme = themeMode;
-    
+
     if (themeMode === "system") {
       // Detect system theme via media query (frontend)
       const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
       effectiveTheme = prefersDark ? "dark" : "light";
     }
-    
+
     // Apply theme to document
     document.documentElement.setAttribute("data-theme", effectiveTheme);
   }
@@ -134,17 +164,6 @@ function Preferences() {
     getCurrentWebviewWindow().close();
   }
 
-  async function handleBrowseModel() {
-    const selected = await open({
-      directory: true,
-      title: "Select Model Directory",
-    });
-    if (selected) {
-      setSettings((s) => (s ? { ...s, model_path: selected } : s));
-      setSaved(false);
-    }
-  }
-
   async function handleBrowseDiagDb() {
     const selected = await save({
       title: "Diagnostic Database Path",
@@ -162,6 +181,146 @@ function Preferences() {
     setSaved(false);
   }
 
+  function engineValue(engineId: string, field: ConfigField): unknown {
+    const blob = settings?.engines[engineId];
+    return blob && field.key in blob ? blob[field.key] : field.default;
+  }
+
+  function updateEngineField(engineId: string, key: string, value: unknown) {
+    setSettings((s) =>
+      s
+        ? {
+            ...s,
+            engines: {
+              ...s.engines,
+              [engineId]: { ...(s.engines[engineId] ?? {}), [key]: value },
+            },
+          }
+        : s
+    );
+    setSaved(false);
+  }
+
+  async function handleBrowseEnginePath(engineId: string, field: ConfigField) {
+    const selected = await open({
+      directory: field.directory ?? false,
+      title: `Select ${field.label}`,
+    });
+    if (selected) {
+      updateEngineField(engineId, field.key, selected);
+    }
+  }
+
+  function renderEngineField(engineId: string, field: ConfigField) {
+    const value = engineValue(engineId, field);
+    switch (field.kind) {
+      case "bool":
+        return (
+          <label key={field.key} className="prefs-label prefs-checkbox-label" title={field.help ?? undefined}>
+            <input
+              type="checkbox"
+              checked={Boolean(value)}
+              onChange={(e) => updateEngineField(engineId, field.key, e.target.checked)}
+            />
+            {field.label}
+          </label>
+        );
+      case "int":
+      case "float": {
+        const min = field.min ?? 0;
+        const max = field.max ?? Number.MAX_SAFE_INTEGER;
+        return (
+          <label key={field.key} className="prefs-label" title={field.help ?? undefined}>
+            {field.label}
+            <input
+              type="number"
+              min={min}
+              max={max}
+              step={field.kind === "float" ? field.step ?? 0.1 : 1}
+              value={Number(value)}
+              onChange={(e) =>
+                updateEngineField(
+                  engineId,
+                  field.key,
+                  Math.min(max, Math.max(min, Number(e.target.value)))
+                )
+              }
+              className="prefs-input prefs-input-narrow"
+            />
+          </label>
+        );
+      }
+      case "enum":
+        return (
+          <label key={field.key} className="prefs-label" title={field.help ?? undefined}>
+            {field.label}
+            <select
+              value={String(value)}
+              onChange={(e) => {
+                // Option values keep their original JSON type (number vs string).
+                const match = (field.options ?? []).find(
+                  (o) => String(o.value) === e.target.value
+                );
+                updateEngineField(engineId, field.key, match?.value ?? e.target.value);
+              }}
+              className="prefs-select"
+            >
+              {(field.options ?? []).map((opt) => (
+                <option key={String(opt.value)} value={String(opt.value)}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        );
+      case "path":
+        return (
+          <label key={field.key} className="prefs-label" title={field.help ?? undefined}>
+            {field.label}
+            <div className="prefs-row">
+              <input
+                type="text"
+                value={String(value ?? "")}
+                onChange={(e) => updateEngineField(engineId, field.key, e.target.value)}
+                className="prefs-input prefs-input-wide"
+              />
+              <button
+                className="prefs-browse-btn"
+                onClick={() => handleBrowseEnginePath(engineId, field)}
+              >
+                Browse...
+              </button>
+            </div>
+          </label>
+        );
+      case "secret":
+        return (
+          <label key={field.key} className="prefs-label" title={field.help ?? undefined}>
+            {field.label}
+            <input
+              type="password"
+              value={String(value ?? "")}
+              onChange={(e) => updateEngineField(engineId, field.key, e.target.value)}
+              className="prefs-input prefs-input-wide"
+            />
+          </label>
+        );
+      case "text":
+      default:
+        return (
+          <label key={field.key} className="prefs-label" title={field.help ?? undefined}>
+            {field.label}
+            <input
+              type="text"
+              value={String(value ?? "")}
+              onChange={(e) => updateEngineField(engineId, field.key, e.target.value)}
+              className="prefs-input prefs-input-wide"
+            />
+          </label>
+        );
+    }
+  }
+
   // Filter fonts based on search input
   const filteredFonts = fontFilter.trim() === ""
     ? availableFonts
@@ -172,6 +331,8 @@ function Preferences() {
   if (!settings) {
     return <div className="prefs-container">Loading...</div>;
   }
+
+  const activeDescriptor = engines.find((e) => e.id === settings.active_engine);
 
   return (
     <div className="prefs-container">
@@ -194,89 +355,6 @@ function Preferences() {
         </label>
 
         <label className="prefs-label">
-          Model Path
-          <div className="prefs-row">
-            <input
-              type="text"
-              value={settings.model_path}
-              onChange={(e) => update("model_path", e.target.value)}
-              className="prefs-input prefs-input-wide"
-            />
-            <button className="prefs-browse-btn" onClick={handleBrowseModel}>
-              Browse...
-            </button>
-          </div>
-        </label>
-
-        <label className="prefs-label">
-          Chunk Size (ms)
-          <select
-            value={settings.chunk_ms}
-            onChange={(e) => update("chunk_ms", Number(e.target.value))}
-            className="prefs-select"
-          >
-            {VALID_CHUNK_MS.map((ms) => (
-              <option key={ms} value={ms}>
-                {ms} ms
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <label className="prefs-label">
-          Intra-op Threads
-          <input
-            type="number"
-            min={1}
-            max={32}
-            value={settings.intra_threads}
-            onChange={(e) =>
-              update("intra_threads", Math.max(1, Number(e.target.value)))
-            }
-            className="prefs-input prefs-input-narrow"
-          />
-        </label>
-
-        <label className="prefs-label">
-          Inter-op Threads
-          <input
-            type="number"
-            min={1}
-            max={32}
-            value={settings.inter_threads}
-            onChange={(e) =>
-              update("inter_threads", Math.max(1, Number(e.target.value)))
-            }
-            className="prefs-input prefs-input-narrow"
-          />
-        </label>
-
-        <label className="prefs-label prefs-checkbox-label">
-          <input
-            type="checkbox"
-            checked={settings.punctuation_reset}
-            onChange={(e) => update("punctuation_reset", e.target.checked)}
-          />
-          Punctuation-based decoder reset
-        </label>
-
-        <label className="prefs-label">
-          Empty chunk reset threshold
-          <input
-            type="number"
-            min={1}
-            max={50}
-            value={settings.empty_reset_threshold}
-            onChange={(e) =>
-              update(
-                "empty_reset_threshold",
-                Math.max(1, Number(e.target.value)),
-              )
-            }
-            className="prefs-input prefs-input-narrow"
-          />
-        </label>
-        <label className="prefs-label">
           Transcript Font
           <div className="font-picker">
             <input
@@ -296,8 +374,8 @@ function Preferences() {
             >
               <option value="">Default system font</option>
               {filteredFonts.map((font) => (
-                <option 
-                  key={font} 
+                <option
+                  key={font}
                   value={font}
                   style={{ fontFamily: font }}
                 >
@@ -323,6 +401,34 @@ function Preferences() {
             className="prefs-input prefs-input-narrow"
           />
         </label>
+      </div>
+
+      <div className="prefs-form">
+        <label className="prefs-label">
+          Speech Engine
+          <select
+            value={settings.active_engine}
+            onChange={(e) => update("active_engine", e.target.value)}
+            className="prefs-select"
+          >
+            {engines.map((engine) => (
+              <option key={engine.id} value={engine.id}>
+                {engine.name}
+                {engine.kind === "cloud" ? " (cloud)" : ""}
+              </option>
+            ))}
+            {!activeDescriptor && (
+              <option value={settings.active_engine}>
+                {settings.active_engine} (not in this build)
+              </option>
+            )}
+          </select>
+        </label>
+
+        {activeDescriptor &&
+          activeDescriptor.config_fields.map((field) =>
+            renderEngineField(activeDescriptor.id, field)
+          )}
       </div>
 
       <div className="prefs-form">
@@ -497,7 +603,8 @@ function Preferences() {
       </div>
 
       <p className="prefs-note">
-        Engine settings take effect on next Start. Font changes apply on save.
+        Engine and engine settings take effect on next Start. Font changes
+        apply on save.
       </p>
 
       {error && <p className="prefs-error">{error}</p>}

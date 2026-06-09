@@ -2,7 +2,7 @@ mod font_enumeration;
 
 use larmindon_core::audio_capture::{ActiveSessionInfo, AudioDevice};
 use larmindon_core::audio_engine::{AudioEngine, Command};
-use larmindon_core::engine::registry::EngineRegistry;
+use larmindon_core::engine::registry::{EngineDescriptor, EngineRegistry};
 use larmindon_core::engine::SegmentUpdate;
 use larmindon_core::settings::Settings;
 use larmindon_core::EngineEventSink;
@@ -151,12 +151,27 @@ fn get_settings(current_settings: State<'_, Mutex<Settings>>) -> Result<Settings
 }
 
 #[tauri::command]
+fn list_engines(registry: State<'_, Arc<EngineRegistry>>) -> Vec<EngineDescriptor> {
+    registry.descriptors()
+}
+
+#[tauri::command]
 fn save_settings(
     new_settings: Settings,
     current_settings: State<'_, Mutex<Settings>>,
     engine: State<'_, Mutex<AudioEngineHandle>>,
+    registry: State<'_, Arc<EngineRegistry>>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
+    // Validate every engine blob this build knows about; unknown engines'
+    // blobs are preserved as-is.
+    for (engine_id, config) in &new_settings.engines {
+        if let Some(factory) = registry.get(engine_id) {
+            factory
+                .validate_config(config)
+                .map_err(|e| format!("{}: {}", engine_id, e))?;
+        }
+    }
     new_settings.save()?;
     let mut settings = current_settings.lock().map_err(|e| e.to_string())?;
     *settings = new_settings.clone();
@@ -171,8 +186,16 @@ fn save_settings(
 }
 
 #[tauri::command]
-fn get_default_settings() -> Settings {
-    Settings::default()
+fn get_default_settings(registry: State<'_, Arc<EngineRegistry>>) -> Settings {
+    let mut settings = Settings::default();
+    for descriptor in registry.descriptors() {
+        if let Some(factory) = registry.get(descriptor.id) {
+            settings
+                .engines
+                .insert(descriptor.id.to_string(), factory.default_config());
+        }
+    }
+    settings
 }
 
 #[tauri::command]
@@ -376,15 +399,37 @@ pub fn run() {
                 .build()?;
             let menu = Menu::with_items(handle, &[&app_menu, &edit_menu, &window_menu])?;
             app.set_menu(menu)?;
-            // Load settings: file -> env overrides
-            let settings = Settings::load().with_env_overrides();
+            // Register the speech engines this build was compiled with.
+            let mut registry = EngineRegistry::new();
+            #[cfg(feature = "engine-nemotron")]
+            registry.register(Arc::new(larmindon_engine_nemotron::NemotronFactory));
+            let registry = Arc::new(registry);
+            app.manage(registry.clone());
+
+            // Load settings: file (migrating v1 if needed) -> env overrides.
+            let mut settings = Settings::load();
+            registry.apply_env_overrides(&mut settings.engines);
+            if let Ok(engine_id) = std::env::var("LARMINDON_ENGINE") {
+                println!("Using LARMINDON_ENGINE={} from environment", engine_id);
+                settings.active_engine = engine_id;
+            }
+            // Seed config for engines that have none yet so Preferences always
+            // has values to show.
+            for descriptor in registry.descriptors() {
+                if let Some(factory) = registry.get(descriptor.id) {
+                    settings
+                        .engines
+                        .entry(descriptor.id.to_string())
+                        .or_insert_with(|| factory.default_config());
+                }
+            }
             println!(
-                "Settings: chunk_ms={}, intra={}, inter={}, punctuation_reset={}, model={}",
-                settings.chunk_ms,
-                settings.intra_threads,
-                settings.inter_threads,
-                settings.punctuation_reset,
-                settings.model_path,
+                "Settings: active_engine={}, config={}",
+                settings.active_engine,
+                settings
+                    .engine_config(&settings.active_engine)
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "<none>".to_string()),
             );
 
             app.manage(Mutex::new(settings));
@@ -437,12 +482,6 @@ pub fn run() {
                 }
             }
 
-            // Register the speech engines this build was compiled with.
-            let mut registry = EngineRegistry::new();
-            #[cfg(feature = "engine-nemotron")]
-            registry.register(Arc::new(larmindon_engine_nemotron::NemotronFactory));
-            let registry = Arc::new(registry);
-
             let session_info_for_engine = active_session_info.clone();
             let registry_for_engine = registry.clone();
             let engine_thread = thread::spawn(move || {
@@ -466,6 +505,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             list_devices,
+            list_engines,
             start_transcription,
             stop_transcription,
             switch_source,
