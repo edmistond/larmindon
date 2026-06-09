@@ -94,21 +94,36 @@ Engines are compile-time features (both on by default): `engine-nemotron`,
 ```sh
 npm run tauri dev -- -- --features webgpu    # macOS (Metal via WebGPU)
 npm run tauri dev -- -- --features directml  # Windows
-npm run tauri:webgpu                         # macOS release bundle
+npm run tauri:webgpu                         # macOS release bundle (.app only)
+npm run tauri:webgpu:full                    # macOS release, all bundle types
 ```
 
-Do not use `npm run tauri build -- --features webgpu` for macOS WebGPU release builds.
-It skips `src-tauri/webgpu.conf.json`, so the `.app` will link `@rpath/libwebgpu_dawn.dylib`
-without bundling that dylib into `Contents/Frameworks`.
+### WebGPU with both engines (load-dynamic builds)
+
+Because `engine-april` flips `ort` to dynamic loading of a single shared
+libonnxruntime (see larmindon-core AGENTS.md), WebGPU comes from that shared
+dylib — and homebrew's onnxruntime is built WITHOUT the WebGPU EP. To get
+WebGPU-accelerated Nemotron alongside April in one binary, drop a
+WebGPU-enabled build (e.g. Microsoft's official release dylib from
+`onnxruntime-osx-arm64-<ver>.tgz`, which statically includes Dawn) at:
+
+```
+~/.config/larmindon/runtime/libonnxruntime.source.dylib
+```
+
+The app build script prefers that file over the package-manager install when
+refreshing the locally-signed managed copy. No `libwebgpu_dawn.dylib` or
+`webgpu.conf.json` is involved in this flow — `tauri:webgpu` is just
+`tauri build --features webgpu`.
+
+`src-tauri/webgpu.conf.json` (bundling pyke's `libwebgpu_dawn.dylib`) only
+applies to static-ort builds, i.e. builds WITHOUT `engine-april`; keep it for
+a self-contained redistributable Nemotron-only bundle.
 
 Note: GPU acceleration is experimental; CPU inference is default. When adding a new
 execution provider feature flag, wire it through `larmindon-engine-nemotron`
 (`ExecutionConfig::with_execution_provider()` in its `begin_session`) — the
 feature flag alone only makes the provider available at compile time.
-
-Note: including `engine-april` flips the `ort` crate (used by VAD and
-parakeet-rs) to dynamic loading of a single shared libonnxruntime — see the
-larmindon-core AGENTS.md for details.
 
 ## Platform Gotchas
 

@@ -9,8 +9,8 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "tauri:webgpu": "tauri build --config src-tauri/webgpu.conf.json --features webgpu --bundles app",
-    "tauri:webgpu:full": "tauri build --config src-tauri/webgpu.conf.json --features webgpu"
+    "tauri:webgpu": "tauri build --features webgpu --bundles app",
+    "tauri:webgpu:full": "tauri build --features webgpu"
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.0",

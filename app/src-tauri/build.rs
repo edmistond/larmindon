@@ -74,28 +74,37 @@ fn prepare_april_runtime() {
 fn make_managed_onnxruntime() -> Option<std::path::PathBuf> {
     use std::path::Path;
 
-    let system = [
-        "/opt/homebrew/lib/libonnxruntime.dylib",
-        "/usr/local/lib/libonnxruntime.dylib",
-    ]
-    .iter()
-    .map(Path::new)
-    .find(|p| p.exists())?;
-    let system = std::fs::canonicalize(system).ok()?;
-    println!("cargo:rerun-if-changed={}", system.display());
-
     let home = std::env::var("HOME").ok()?;
     let runtime_dir = Path::new(&home).join(".config/larmindon/runtime");
     std::fs::create_dir_all(&runtime_dir).ok()?;
     let managed = runtime_dir.join("libonnxruntime.dylib");
 
+    // Preferred source: a user-provided build dropped next to the managed
+    // copy (e.g. Microsoft's official release dylib, which — unlike brew's —
+    // includes the WebGPU execution provider Nemotron wants). Fallback:
+    // package-manager installs.
+    let source_override = runtime_dir.join("libonnxruntime.source.dylib");
+    let system = std::iter::once(source_override.as_path())
+        .chain(
+            [
+                "/opt/homebrew/lib/libonnxruntime.dylib",
+                "/usr/local/lib/libonnxruntime.dylib",
+            ]
+            .iter()
+            .map(Path::new),
+        )
+        .find(|p| p.exists())?;
+    let system = std::fs::canonicalize(system).ok()?;
+    println!("cargo:rerun-if-changed={}", system.display());
+
+    // Compare mtimes only: re-signing changes the copy's size, so length
+    // comparison would mark it stale on every build.
     let system_meta = std::fs::metadata(&system).ok()?;
     let fresh = std::fs::metadata(&managed).is_ok_and(|m| {
-        m.len() == system_meta.len()
-            && matches!(
-                (m.modified(), system_meta.modified()),
-                (Ok(ours), Ok(theirs)) if ours >= theirs
-            )
+        matches!(
+            (m.modified(), system_meta.modified()),
+            (Ok(ours), Ok(theirs)) if ours >= theirs
+        )
     });
     if fresh {
         return Some(managed);
