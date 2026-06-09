@@ -47,4 +47,4 @@ cpal = ["larmindon-core/cpal"]
 fontconfig = ["dep:fontconfig"]
 
 [patch."https://github.com/edmistond/larmindon-core.git"]
-larmindon-core = { path = "../../../larmindon-core" }
+larmindon-core = { path = "../../../larmindon-core/crates/larmindon-core" }
