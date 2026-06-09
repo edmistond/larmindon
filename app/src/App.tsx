@@ -20,14 +20,51 @@ interface Settings {
   theme_mode: string;
 }
 
+interface TranscriptionUpdate {
+  segment_id: number;
+  text: string;
+  is_final: boolean;
+}
+
+interface Segment {
+  id: number;
+  text: string;
+  final: boolean;
+}
+
+/** Insert or replace a segment by id. Open (non-final) segments live near the
+ * tail, so search from the end. */
+export function upsertSegment(
+  segments: Segment[],
+  update: TranscriptionUpdate
+): Segment[] {
+  const segment = {
+    id: update.segment_id,
+    text: update.text,
+    final: update.is_final,
+  };
+  for (let i = segments.length - 1; i >= 0; i--) {
+    if (segments[i].id === update.segment_id) {
+      const next = segments.slice();
+      next[i] = segment;
+      return next;
+    }
+  }
+  return [...segments, segment];
+}
+
 function App() {
   const [devices, setDevices] = useState<AudioDevice[]>([]);
   const [selectedDevice, setSelectedDevice] = useState<string>("");
   const [isRunning, setIsRunning] = useState(false);
-  const [transcript, setTranscript] = useState("");
+  const [segments, setSegments] = useState<Segment[]>([]);
   const [error, setError] = useState("");
   const transcriptRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
+  // Clearing the transcript while a transient segment is in flight must not
+  // let its next update resurrect it: drop updates for ids seen before clear.
+  const minAcceptedIdRef = useRef(0);
+  const lastSeenIdRef = useRef(-1);
   const [fontSettings, setFontSettings] = useState<Settings>({
     font_family: "",
     font_size_px: 0,
@@ -60,10 +97,17 @@ function App() {
 
     init();
 
-    const unlistenTranscription = listen<{ text: string }>(
-      "transcription",
+    const unlistenTranscription = listen<TranscriptionUpdate>(
+      "transcription-update",
       (event) => {
-        setTranscript((prev) => prev + event.payload.text);
+        if (event.payload.segment_id < minAcceptedIdRef.current) {
+          return;
+        }
+        lastSeenIdRef.current = Math.max(
+          lastSeenIdRef.current,
+          event.payload.segment_id
+        );
+        setSegments((prev) => upsertSegment(prev, event.payload));
         setError("");
       }
     );
@@ -92,7 +136,8 @@ function App() {
     );
 
     const unlistenClearTranscript = listen("clear-transcript", () => {
-      setTranscript("");
+      minAcceptedIdRef.current = lastSeenIdRef.current + 1;
+      setSegments([]);
     });
 
     const unlistenCopyTranscript = listen("copy-transcript", () => {
@@ -191,7 +236,7 @@ function App() {
     if (el && stickToBottomRef.current) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [transcript]);
+  }, [segments]);
 
   function handleTranscriptScroll() {
     const el = transcriptRef.current;
@@ -362,7 +407,13 @@ function App() {
           ...(fontSettings.font_size_px > 0 ? { fontSize: `${fontSettings.font_size_px}px` } : {}),
         }}
       >
-        {transcript || (
+        {segments.length > 0 ? (
+          segments.map((s) => (
+            <span key={s.id} className={s.final ? undefined : "transient"}>
+              {s.text}
+            </span>
+          ))
+        ) : (
           <span className="placeholder">
             {isRunning
               ? "Listening..."

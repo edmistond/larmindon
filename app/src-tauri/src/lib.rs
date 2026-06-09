@@ -3,6 +3,7 @@ mod font_enumeration;
 use larmindon_core::audio_capture::{ActiveSessionInfo, AudioDevice};
 use larmindon_core::audio_engine::{AudioEngine, Command};
 use larmindon_core::engine::registry::EngineRegistry;
+use larmindon_core::engine::SegmentUpdate;
 use larmindon_core::settings::Settings;
 use larmindon_core::EngineEventSink;
 use serde::Serialize;
@@ -28,8 +29,8 @@ struct TranscriptionPayload {
 }
 
 impl EngineEventSink for TauriEventSink {
-    fn on_transcription(&self, text: String) {
-        let _ = self.0.emit("transcription", TranscriptionPayload { text });
+    fn on_segment_update(&self, update: SegmentUpdate) {
+        let _ = self.0.emit("transcription-update", &update);
     }
 
     fn on_error(&self, message: String) {

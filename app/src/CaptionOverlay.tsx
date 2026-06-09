@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type MouseEvent } from "react";
+import { useEffect, useMemo, useState, useRef, type MouseEvent } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import "./CaptionOverlay.css";
@@ -8,10 +8,65 @@ interface Settings {
   font_size_px: number;
 }
 
+interface TranscriptionUpdate {
+  segment_id: number;
+  text: string;
+  is_final: boolean;
+}
+
+interface Segment {
+  id: number;
+  text: string;
+  final: boolean;
+}
+
 const MAX_CAPTION_CHARS = 170;
 
+/** Upsert the segment, then drop finalized segments from the front while the
+ * remainder still covers the caption window. Non-final segments are never
+ * dropped — they can still change. */
+function applyUpdate(segments: Segment[], update: TranscriptionUpdate): Segment[] {
+  let next: Segment[] | null = null;
+  for (let i = segments.length - 1; i >= 0; i--) {
+    if (segments[i].id === update.segment_id) {
+      next = segments.slice();
+      next[i] = { id: update.segment_id, text: update.text, final: update.is_final };
+      break;
+    }
+  }
+  if (!next) {
+    next = [
+      ...segments,
+      { id: update.segment_id, text: update.text, final: update.is_final },
+    ];
+  }
+
+  let total = next.reduce((n, s) => n + s.text.length, 0);
+  let start = 0;
+  while (
+    start < next.length - 1 &&
+    next[start].final &&
+    total - next[start].text.length >= MAX_CAPTION_CHARS
+  ) {
+    total -= next[start].text.length;
+    start++;
+  }
+  return start > 0 ? next.slice(start) : next;
+}
+
+function renderCaption(segments: Segment[]): string {
+  const text = segments
+    .map((s) => s.text)
+    .join("")
+    .replace(/\s+/g, " ")
+    .trimStart();
+  return text.slice(Math.max(0, text.length - MAX_CAPTION_CHARS));
+}
+
 function CaptionOverlay() {
-  const [caption, setCaption] = useState("");
+  const [segments, setSegments] = useState<Segment[]>([]);
+  const minAcceptedIdRef = useRef(0);
+  const lastSeenIdRef = useRef(-1);
   const [fontSettings, setFontSettings] = useState<Settings>({
     font_family: "",
     font_size_px: 0,
@@ -31,18 +86,23 @@ function CaptionOverlay() {
       }
     }
 
-    const unlistenTranscription = listen<{ text: string }>(
-      "transcription",
+    const unlistenTranscription = listen<TranscriptionUpdate>(
+      "transcription-update",
       (event) => {
-        setCaption((prev) => {
-          const next = `${prev}${event.payload.text}`.replace(/\s+/g, " ").trimStart();
-          return next.slice(Math.max(0, next.length - MAX_CAPTION_CHARS));
-        });
+        if (event.payload.segment_id < minAcceptedIdRef.current) {
+          return;
+        }
+        lastSeenIdRef.current = Math.max(
+          lastSeenIdRef.current,
+          event.payload.segment_id,
+        );
+        setSegments((prev) => applyUpdate(prev, event.payload));
       },
     );
 
     const unlistenClearTranscript = listen("clear-transcript", () => {
-      setCaption("");
+      minAcceptedIdRef.current = lastSeenIdRef.current + 1;
+      setSegments([]);
     });
 
     const unlistenSettings = listen<Settings>("settings-changed", (event) => {
@@ -58,6 +118,8 @@ function CaptionOverlay() {
       unlistenSettings.then((fn) => fn());
     };
   }, []);
+
+  const caption = useMemo(() => renderCaption(segments), [segments]);
 
   const textStyle = useMemo(
     () => ({

@@ -174,3 +174,9 @@ button {
     color: var(--color-text-placeholder);
     font-style: italic;
 }
+
+/* Transient (not-yet-finalized) segments; they snap to normal styling when
+   the engine finalizes them. */
+.transcript .transient {
+    opacity: 0.55;
+}
