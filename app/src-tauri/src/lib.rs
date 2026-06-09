@@ -403,6 +403,14 @@ pub fn run() {
             let mut registry = EngineRegistry::new();
             #[cfg(feature = "engine-nemotron")]
             registry.register(Arc::new(larmindon_engine_nemotron::NemotronFactory));
+            #[cfg(feature = "engine-april")]
+            {
+                // Must run before anything loads an ONNX model: with the
+                // april engine in the build, ort is in load-dynamic mode and
+                // needs to find the system libonnxruntime.
+                larmindon_engine_april::ensure_ort_dylib();
+                registry.register(Arc::new(larmindon_engine_april::AprilFactory));
+            }
             let registry = Arc::new(registry);
             app.manage(registry.clone());
 

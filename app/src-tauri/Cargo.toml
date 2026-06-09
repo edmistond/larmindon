@@ -21,6 +21,7 @@ tauri-build = { version = "2.6.1", features = [] }
 [dependencies]
 larmindon-core = { git = "https://github.com/edmistond/larmindon-core.git", branch = "main" }
 larmindon-engine-nemotron = { git = "https://github.com/edmistond/larmindon-core.git", branch = "main", optional = true }
+larmindon-engine-april = { git = "https://github.com/edmistond/larmindon-core.git", branch = "main", optional = true }
 tauri = { version = "2.11.1", features = ["macos-private-api"] }
 tauri-plugin-opener = "2.5.4"
 tauri-plugin-dialog = "2.7.1"
@@ -39,8 +40,12 @@ windows = { version = "0.58", features = ["Win32_Graphics_DirectWrite"] }
 fontconfig = { version = "0.8", optional = true }
 
 [features]
-default = ["cpal", "pipewire", "engine-nemotron"]
+default = ["cpal", "pipewire", "engine-nemotron", "engine-april"]
 engine-nemotron = ["dep:larmindon-engine-nemotron"]
+# Requires cmake + libclang at build time and a system libonnxruntime at
+# runtime (e.g. `brew install onnxruntime`); also flips the whole build's
+# ONNX Runtime to dynamic loading. See larmindon-engine-april.
+engine-april = ["dep:larmindon-engine-april"]
 webgpu = ["larmindon-engine-nemotron?/webgpu"]
 directml = ["larmindon-engine-nemotron?/directml"]
 migraphx = ["larmindon-engine-nemotron?/migraphx"]
@@ -51,3 +56,4 @@ fontconfig = ["dep:fontconfig"]
 [patch."https://github.com/edmistond/larmindon-core.git"]
 larmindon-core = { path = "../../../larmindon-core/crates/larmindon-core" }
 larmindon-engine-nemotron = { path = "../../../larmindon-core/crates/larmindon-engine-nemotron" }
+larmindon-engine-april = { path = "../../../larmindon-core/crates/larmindon-engine-april" }
