@@ -20,6 +20,11 @@ interface Settings {
   theme_mode: string;
 }
 
+interface AudioLevel {
+  level: number;
+  vad_active: boolean;
+}
+
 function App() {
   const [devices, setDevices] = useState<AudioDevice[]>([]);
   const [selectedDevice, setSelectedDevice] = useState<string>("");
@@ -27,6 +32,8 @@ function App() {
   const [transcript, setTranscript] = useState("");
   const [error, setError] = useState("");
   const transcriptRef = useRef<HTMLDivElement>(null);
+  const audioMeterRef = useRef<HTMLDivElement>(null);
+  const audioMeterFillRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
   const [fontSettings, setFontSettings] = useState<Settings>({
     font_family: "",
@@ -73,6 +80,7 @@ function App() {
       (event) => {
         setError(event.payload.text);
         setIsRunning(false);
+        resetAudioMeter();
       }
     );
 
@@ -107,6 +115,19 @@ function App() {
       openPreferences();
     });
 
+    // Meter updates bypass React state so 20 Hz audio events do not re-render
+    // the transcript or controls. The fill uses a compositor-friendly scale.
+    const unlistenAudioLevel = listen<AudioLevel>("audio-level", (event) => {
+      const level = Math.max(0, Math.min(1, event.payload.level));
+      if (audioMeterFillRef.current) {
+        audioMeterFillRef.current.style.transform = `scaleX(${level})`;
+      }
+      if (audioMeterRef.current) {
+        audioMeterRef.current.dataset.vad = String(event.payload.vad_active);
+        audioMeterRef.current.setAttribute("aria-valuenow", String(Math.round(level * 100)));
+      }
+    });
+
     return () => {
       unlistenTranscription.then((fn) => fn());
       unlistenError.then((fn) => fn());
@@ -115,6 +136,7 @@ function App() {
       unlistenClearTranscript.then((fn) => fn());
       unlistenCopyTranscript.then((fn) => fn());
       unlistenOpenPreferences.then((fn) => fn());
+      unlistenAudioLevel.then((fn) => fn());
     };
   }, []);
 
@@ -252,6 +274,7 @@ function App() {
 
   async function handleStart() {
     setError("");
+    resetAudioMeter();
     try {
       await invoke("start_transcription", {
         deviceId: selectedDevice || null,
@@ -266,8 +289,19 @@ function App() {
     try {
       await invoke("stop_transcription");
       setIsRunning(false);
+      resetAudioMeter();
     } catch (e) {
       setError(String(e));
+    }
+  }
+
+  function resetAudioMeter() {
+    if (audioMeterFillRef.current) {
+      audioMeterFillRef.current.style.transform = "scaleX(0)";
+    }
+    if (audioMeterRef.current) {
+      audioMeterRef.current.dataset.vad = "false";
+      audioMeterRef.current.setAttribute("aria-valuenow", "0");
     }
   }
 
@@ -369,6 +403,25 @@ function App() {
               : "Select an audio source and press Start"}
           </span>
         )}
+      </div>
+
+      <div className="audio-status" data-running={isRunning}>
+        <div className="audio-status-label">
+          <span className="audio-status-dot" aria-hidden="true" />
+          <span>{isRunning ? "Listening" : "Idle"}</span>
+        </div>
+        <div
+          className="audio-meter"
+          ref={audioMeterRef}
+          data-vad="false"
+          role="meter"
+          aria-label="Input audio level"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={0}
+        >
+          <div className="audio-meter-fill" ref={audioMeterFillRef} />
+        </div>
       </div>
     </main>
   );

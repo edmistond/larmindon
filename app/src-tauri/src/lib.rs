@@ -26,6 +26,12 @@ struct TranscriptionPayload {
     text: String,
 }
 
+#[derive(Serialize, Clone, Copy)]
+struct AudioLevelPayload {
+    level: f32,
+    vad_active: bool,
+}
+
 impl EngineEventSink for TauriEventSink {
     fn on_transcription(&self, text: String) {
         let _ = self.0.emit("transcription", TranscriptionPayload { text });
@@ -44,6 +50,12 @@ impl EngineEventSink for TauriEventSink {
 
     fn on_devices_changed(&self, devices: Vec<AudioDevice>) {
         let _ = self.0.emit("devices-changed", &devices);
+    }
+
+    fn on_audio_level(&self, level: f32, vad_active: bool) {
+        let _ = self
+            .0
+            .emit("audio-level", AudioLevelPayload { level, vad_active });
     }
 }
 
@@ -260,7 +272,7 @@ fn create_audio_backend() -> Box<dyn larmindon_core::audio_capture::AudioCapture
     #[cfg(all(target_os = "windows", feature = "cpal"))]
     {
         println!("Using Windows composite backend (cpal + WASAPI process loopback)");
-        return larmindon_core::audio_capture::windows_composite::create_backend();
+        larmindon_core::audio_capture::windows_composite::create_backend()
     }
 
     // Default to CPAL (skipped on Windows when the composite backend above has
