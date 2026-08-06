@@ -118,9 +118,20 @@ Main thread (Tauri)
 
 ### Frontend ↔ Backend Interface
 
-**Commands** (invoke from React): `list_devices`, `start_transcription(device_id)`, `stop_transcription`, `switch_source(device_id)`, `get_settings`, `save_settings`, `get_default_settings`, `get_system_theme`, `get_system_fonts`
+**Commands** (invoke from React): `list_devices`, `start_transcription(device_id)`, `stop_transcription`, `switch_source(device_id)`, `get_settings`, `save_settings`, `get_default_settings`, `has_soniox_api_key`, `get_system_theme`, `get_system_fonts`
 
-**Events** (emit to React): `transcription { text }`, `transcription-error { text }`, `source-switched { device_id }`, `settings-changed { settings }`, `clear-transcript`, `copy-transcript`, `devices-changed`, `open-preferences`
+**Events** (emit to React): `transcript-update { segment_id, is_final, text, speaker }`, `transcription-error { text }`, `engine-status { level, text }`, `audio-level { level, vad_active }`, `source-switched { device_id }`, `settings-changed { settings }`, `clear-transcript`, `copy-transcript`, `devices-changed`, `open-preferences`
+
+Transcript is delivered as segments, not appended text. A segment may be
+re-sent with `is_final: false` while a backend revises it, then finalized once;
+`text` is always the segment's complete text. `app/src/transcriptStore.ts` folds
+finalized segments into speaker turns and is unit-tested (`pnpm test`).
+
+`get_settings` and `settings-changed` carry the **redacted** settings — the
+Soniox API key is blanked, so it never reaches a webview or the
+`larmindon_settings` localStorage mirror. `save_settings` treats an empty
+incoming key as "keep the stored one"; use `has_soniox_api_key` to tell whether
+one is saved.
 
 ### Windows
 

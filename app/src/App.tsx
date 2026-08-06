@@ -1,8 +1,16 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useReducer } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { WebviewWindow, getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { LogicalPosition } from "@tauri-apps/api/dpi";
+import {
+  apply,
+  clear,
+  createStore,
+  openText,
+  renderText,
+  type TranscriptUpdate,
+} from "./transcriptStore";
 import "./App.css";
 
 interface AudioDevice {
@@ -29,8 +37,13 @@ function App() {
   const [devices, setDevices] = useState<AudioDevice[]>([]);
   const [selectedDevice, setSelectedDevice] = useState<string>("");
   const [isRunning, setIsRunning] = useState(false);
-  const [transcript, setTranscript] = useState("");
   const [error, setError] = useState("");
+  // The store lives in a ref and renders are coalesced to one per frame, for
+  // the same reason the audio meter bypasses React: a revising backend can emit
+  // far faster than the display needs.
+  const store = useRef(createStore());
+  const [, bumpVersion] = useReducer((n: number) => n + 1, 0);
+  const renderPending = useRef(false);
   const transcriptRef = useRef<HTMLDivElement>(null);
   const audioMeterRef = useRef<HTMLDivElement>(null);
   const audioMeterFillRef = useRef<HTMLDivElement>(null);
@@ -67,10 +80,12 @@ function App() {
 
     init();
 
-    const unlistenTranscription = listen<{ text: string }>(
-      "transcription",
+    const unlistenTranscription = listen<TranscriptUpdate>(
+      "transcript-update",
       (event) => {
-        setTranscript((prev) => prev + event.payload.text);
+        if (apply(store.current, event.payload)) {
+          scheduleTranscriptRender();
+        }
         setError("");
       }
     );
@@ -100,14 +115,20 @@ function App() {
     );
 
     const unlistenClearTranscript = listen("clear-transcript", () => {
-      setTranscript("");
+      clear(store.current);
+      scheduleTranscriptRender();
     });
 
+    // Reads the ref rather than state: this effect has empty deps, so any
+    // state captured here would be permanently stale. Serializing from the
+    // store also keeps interim text and speaker labels out of the clipboard.
     const unlistenCopyTranscript = listen("copy-transcript", () => {
-      // transcript state isn't accessible here due to closure, so read from DOM
-      const el = document.querySelector(".transcript");
-      if (el?.textContent) {
-        navigator.clipboard.writeText(el.textContent);
+      const text = renderText(store.current, {
+        finalsOnly: true,
+        speakerLabels: true,
+      });
+      if (text) {
+        navigator.clipboard.writeText(text);
       }
     });
 
@@ -208,12 +229,24 @@ function App() {
     };
   }, [fontSettings.theme_mode]);
 
-  useEffect(() => {
-    const el = transcriptRef.current;
-    if (el && stickToBottomRef.current) {
-      el.scrollTop = el.scrollHeight;
-    }
-  }, [transcript]);
+  /**
+   * Coalesces any number of updates within one frame into a single render, and
+   * does the scroll-to-bottom in the same callback so the layout-forcing
+   * `scrollHeight` read happens at most once per frame rather than once per
+   * update.
+   */
+  function scheduleTranscriptRender() {
+    if (renderPending.current) return;
+    renderPending.current = true;
+    requestAnimationFrame(() => {
+      renderPending.current = false;
+      bumpVersion();
+      const el = transcriptRef.current;
+      if (el && stickToBottomRef.current) {
+        el.scrollTop = el.scrollHeight;
+      }
+    });
+  }
 
   function handleTranscriptScroll() {
     const el = transcriptRef.current;
@@ -304,6 +337,11 @@ function App() {
       audioMeterRef.current.setAttribute("aria-valuenow", "0");
     }
   }
+
+  // Read straight from the store; `bumpVersion` is what re-runs this render.
+  const turns = store.current.turns;
+  const tail = openText(store.current);
+  const hasTranscript = turns.length > 0 || tail.length > 0;
 
   return (
     <main className="container">
@@ -396,7 +434,26 @@ function App() {
           ...(fontSettings.font_size_px > 0 ? { fontSize: `${fontSettings.font_size_px}px` } : {}),
         }}
       >
-        {transcript || (
+        {hasTranscript ? (
+          <>
+            {/* No literal spaces between these children: the container is
+                white-space: pre-wrap, so a same-line gap would render as a
+                real space. Newline-separated JSX is stripped and is safe. */}
+            {turns.map((turn, i) => (
+              <span
+                key={i}
+                className={turn.speaker === null ? undefined : "turn"}
+                data-speaker={turn.speaker ?? undefined}
+              >
+                {turn.speaker !== null && (
+                  <span className="speaker-tag">{`[S${turn.speaker}] `}</span>
+                )}
+                {i === 0 || turn.speaker !== null ? turn.text.trimStart() : turn.text}
+              </span>
+            ))}
+            {tail && <span className="transient">{tail}</span>}
+          </>
+        ) : (
           <span className="placeholder">
             {isRunning
               ? "Listening..."

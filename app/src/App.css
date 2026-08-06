@@ -27,6 +27,12 @@ html, body {
     --color-error: #ef5350;
     --color-meter-track: #444;
     --color-meter-fill: #999;
+    /* Per-speaker accents. Cycled by index in JS; tuned for the dark surface. */
+    --color-speaker-1: #6cb6ff;
+    --color-speaker-2: #7ee081;
+    --color-speaker-3: #e8a2d8;
+    --color-speaker-4: #f4c162;
+    --color-speaker-5: #ff9b7a;
 
     color: var(--color-text);
     background-color: var(--color-bg);
@@ -55,6 +61,11 @@ html, body {
     --color-error: #d32f2f;
     --color-meter-track: #ddd;
     --color-meter-fill: #777;
+    --color-speaker-1: #1663b5;
+    --color-speaker-2: #1d7a35;
+    --color-speaker-3: #9c2d86;
+    --color-speaker-4: #8a5a06;
+    --color-speaker-5: #b8431c;
 }
 
 .container {
@@ -178,6 +189,25 @@ button {
     color: var(--color-text-placeholder);
     font-style: italic;
 }
+
+/* Segments still being revised by the backend. */
+.transient {
+    opacity: 0.55;
+}
+
+/* Sized in em so it tracks the user's font_size_px, which is applied as an
+   inline style and would beat any px-based rule here. */
+.speaker-tag {
+    font-size: 0.8em;
+    font-weight: 600;
+    opacity: 0.9;
+}
+
+.turn[data-speaker] .speaker-tag { color: var(--color-speaker-1); }
+.turn[data-speaker="2"] .speaker-tag { color: var(--color-speaker-2); }
+.turn[data-speaker="3"] .speaker-tag { color: var(--color-speaker-3); }
+.turn[data-speaker="4"] .speaker-tag { color: var(--color-speaker-4); }
+.turn[data-speaker="5"] .speaker-tag { color: var(--color-speaker-5); }
 
 .audio-status {
     display: flex;

@@ -38,7 +38,8 @@ windows = { version = "0.58", features = ["Win32_Graphics_DirectWrite"] }
 fontconfig = { version = "0.8", optional = true }
 
 [features]
-default = ["cpal", "pipewire"]
+default = ["cpal", "pipewire", "asr-soniox"]
+asr-soniox = ["larmindon-core/asr-soniox"]
 webgpu = ["larmindon-core/webgpu"]
 directml = ["larmindon-core/directml"]
 migraphx = ["larmindon-core/migraphx"]

@@ -1,9 +1,10 @@
 mod font_enumeration;
 
+use larmindon_core::asr::TranscriptUpdate;
 use larmindon_core::audio_capture::{ActiveSessionInfo, AudioDevice};
 use larmindon_core::audio_engine::{AudioEngine, Command};
 use larmindon_core::settings::Settings;
-use larmindon_core::EngineEventSink;
+use larmindon_core::{EngineEventSink, StatusLevel};
 use serde::Serialize;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc;
@@ -29,12 +30,34 @@ struct TranscriptionPayload {
 #[derive(Serialize, Clone, Copy)]
 struct AudioLevelPayload {
     level: f32,
+    /// True while speech is being heard. Named for the CSS/data attribute the
+    /// meter has always used; the source is now per-backend (the VAD for local
+    /// models, the provider's own token flow for cloud ones).
     vad_active: bool,
 }
 
+#[derive(Serialize, Clone)]
+struct StatusPayload {
+    level: &'static str,
+    text: String,
+}
+
 impl EngineEventSink for TauriEventSink {
-    fn on_transcription(&self, text: String) {
-        let _ = self.0.emit("transcription", TranscriptionPayload { text });
+    fn on_transcript_update(&self, update: TranscriptUpdate) {
+        let _ = self.0.emit("transcript-update", update);
+    }
+
+    fn on_status(&self, level: StatusLevel, message: String) {
+        let _ = self.0.emit(
+            "engine-status",
+            StatusPayload {
+                level: match level {
+                    StatusLevel::Info => "info",
+                    StatusLevel::Warn => "warn",
+                },
+                text: message,
+            },
+        );
     }
 
     fn on_error(&self, message: String) {
@@ -154,29 +177,51 @@ fn toggle_caption_overlay(app_handle: &tauri::AppHandle) -> Result<(), String> {
     }
 }
 
+/// Returns the redacted form. The secret never crosses into a webview, which
+/// is what keeps it out of the `localStorage` mirrors the windows keep.
 #[tauri::command]
 fn get_settings(current_settings: State<'_, Mutex<Settings>>) -> Result<Settings, String> {
     let settings = current_settings.lock().map_err(|e| e.to_string())?;
-    Ok(settings.clone())
+    Ok(settings.redacted())
+}
+
+/// Whether an API key is stored, so Preferences can show "saved, type to
+/// replace" without ever receiving the value. Deliberately not a `Settings`
+/// field: that would round-trip through save and be persisted to disk.
+#[tauri::command]
+fn has_soniox_api_key(current_settings: State<'_, Mutex<Settings>>) -> Result<bool, String> {
+    let settings = current_settings.lock().map_err(|e| e.to_string())?;
+    Ok(settings.has_soniox_api_key())
 }
 
 #[tauri::command]
 fn save_settings(
-    new_settings: Settings,
+    mut new_settings: Settings,
     current_settings: State<'_, Mutex<Settings>>,
     engine: State<'_, Mutex<AudioEngineHandle>>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
+    // The UI receives the key blanked, so an empty value means "keep the
+    // stored one". This must happen before save(), which validates and would
+    // otherwise both reject the blank key and persist it.
+    {
+        let current = current_settings.lock().map_err(|e| e.to_string())?;
+        if new_settings.soniox_api_key.is_empty() {
+            new_settings.soniox_api_key = current.soniox_api_key.clone();
+        }
+    }
+
     new_settings.save()?;
     let mut settings = current_settings.lock().map_err(|e| e.to_string())?;
     *settings = new_settings.clone();
-    // Hot-reload settings into the active processing thread (if any)
+    // Hot-reload settings into the active processing thread (if any).
+    // Sends the merged copy, so the engine keeps a usable key.
     if let Ok(handle) = engine.lock() {
         let _ = handle.cmd_tx.send(Command::UpdateSettings {
             settings: new_settings.clone(),
         });
     }
-    let _ = app_handle.emit("settings-changed", new_settings);
+    let _ = app_handle.emit("settings-changed", new_settings.redacted());
     Ok(())
 }
 
@@ -474,6 +519,7 @@ pub fn run() {
             get_settings,
             save_settings,
             get_default_settings,
+            has_soniox_api_key,
             get_system_theme,
             get_system_fonts,
         ])
