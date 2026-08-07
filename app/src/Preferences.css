@@ -135,6 +135,19 @@
     font-style: italic;
 }
 
+/* In-section aside, e.g. where a secret is stored. Smaller and tighter than
+   .prefs-note, which is a whole-panel footnote. */
+.prefs-hint {
+    margin: -0.4rem 0 0 0;
+    font-size: 0.8em;
+    color: var(--color-text-muted);
+}
+
+.prefs-hint code {
+    font-size: 0.95em;
+    word-break: break-all;
+}
+
 .prefs-error {
     color: var(--color-error);
     margin: 0.3rem 0;

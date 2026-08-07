@@ -6,6 +6,7 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import "./Preferences.css";
 
 interface Settings {
+  asr_provider: string;
   model_path: string;
   chunk_ms: number;
   intra_threads: number;
@@ -24,6 +25,13 @@ interface Settings {
   agc_max_gain_db: number;
   agc_attack_ms: number;
   agc_release_ms: number;
+  /// Always arrives blank: the backend redacts it on the way out. A blank value
+  /// on the way back in means "keep the stored key".
+  soniox_api_key: string;
+  soniox_model: string;
+  soniox_language_hints: string;
+  soniox_diarization: boolean;
+  soniox_endpoint_detection: boolean;
 }
 
 const VALID_CHUNK_MS = [80, 160, 560, 1120];
@@ -31,6 +39,10 @@ const THEME_OPTIONS = [
   { value: "dark", label: "Dark" },
   { value: "light", label: "Light" },
   { value: "system", label: "System" },
+];
+const PROVIDER_OPTIONS = [
+  { value: "nemotron", label: "Nemotron (on-device)" },
+  { value: "soniox", label: "Soniox (cloud)" },
 ];
 
 function Preferences() {
@@ -43,9 +55,13 @@ function Preferences() {
   const [isLoadingFonts, setIsLoadingFonts] = useState(true);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [agcOpen, setAgcOpen] = useState(false);
+  const [providerOpen, setProviderOpen] = useState(false);
+  // Presence only. The value itself never reaches this window.
+  const [hasApiKey, setHasApiKey] = useState(false);
 
   useEffect(() => {
     loadSettings();
+    loadApiKeyPresence();
     loadFonts();
 
     // Listen for settings changes from other windows
@@ -59,6 +75,14 @@ function Preferences() {
       unlisten.then((fn) => fn());
     };
   }, []);
+
+  async function loadApiKeyPresence() {
+    try {
+      setHasApiKey(await invoke<boolean>("has_soniox_api_key"));
+    } catch (e) {
+      console.error("Failed to check for a stored Soniox key:", e);
+    }
+  }
 
   async function loadFonts() {
     setIsLoadingFonts(true);
@@ -107,8 +131,18 @@ function Preferences() {
     setSaved(false);
     try {
       await invoke("save_settings", { newSettings: settings });
-      // Also save to localStorage for immediate access on next load
-      localStorage.setItem('larmindon_settings', JSON.stringify(settings));
+      // This window is the only place in the frontend that ever holds a key, so
+      // it is also the only place that has to strip one. Everything else is
+      // safe by construction: the backend redacts `get_settings` and
+      // `settings-changed`. Blanking it also restores the "keep the stored key"
+      // contract for the next save, and flips the field back to its placeholder.
+      const typedKey = settings.soniox_api_key.trim() !== "";
+      const mirrored = { ...settings, soniox_api_key: "" };
+      localStorage.setItem('larmindon_settings', JSON.stringify(mirrored));
+      setSettings(mirrored);
+      if (typedKey) {
+        setHasApiKey(true);
+      }
       await applyTheme(settings.theme_mode);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
@@ -172,6 +206,9 @@ function Preferences() {
   if (!settings) {
     return <div className="prefs-container">Loading...</div>;
   }
+
+  // Disabled rather than unmounted, matching the diagnostics path field.
+  const sonioxSelected = settings.asr_provider === "soniox";
 
   return (
     <div className="prefs-container">
@@ -354,6 +391,98 @@ function Preferences() {
             </button>
           </div>
         </label>
+      </div>
+
+      <div className="prefs-advanced">
+        <button
+          type="button"
+          className="prefs-advanced-toggle"
+          onClick={() => setProviderOpen(!providerOpen)}
+        >
+          <span className={`prefs-advanced-arrow ${providerOpen ? "open" : ""}`}>▶</span>
+          Transcription Provider
+        </button>
+        {providerOpen && (
+          <div className="prefs-advanced-content">
+            <label className="prefs-label">
+              Provider
+              <select
+                value={settings.asr_provider}
+                onChange={(e) => update("asr_provider", e.target.value)}
+                className="prefs-select"
+              >
+                {PROVIDER_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="prefs-label">
+              Soniox API Key
+              <input
+                type="password"
+                // Never rendered: it arrives blank, and is blanked again after
+                // every save. The placeholder is the only presence signal.
+                value={settings.soniox_api_key}
+                onChange={(e) => update("soniox_api_key", e.target.value)}
+                placeholder={hasApiKey ? "Key saved — type to replace" : "Enter API key"}
+                disabled={!sonioxSelected}
+                autoComplete="off"
+                spellCheck={false}
+                className="prefs-input prefs-input-wide"
+              />
+            </label>
+
+            <p className="prefs-hint">
+              Stored as plain text in <code>~/.config/larmindon/settings.json</code>.
+            </p>
+
+            <label className="prefs-label">
+              Model
+              <input
+                type="text"
+                value={settings.soniox_model}
+                onChange={(e) => update("soniox_model", e.target.value)}
+                disabled={!sonioxSelected}
+                className="prefs-input prefs-input-wide"
+              />
+            </label>
+
+            <label className="prefs-label">
+              Language Hints
+              <input
+                type="text"
+                value={settings.soniox_language_hints}
+                onChange={(e) => update("soniox_language_hints", e.target.value)}
+                placeholder="en, es — blank to auto-detect"
+                disabled={!sonioxSelected}
+                className="prefs-input prefs-input-wide"
+              />
+            </label>
+
+            <label className="prefs-label prefs-checkbox-label">
+              <input
+                type="checkbox"
+                checked={settings.soniox_diarization}
+                onChange={(e) => update("soniox_diarization", e.target.checked)}
+                disabled={!sonioxSelected}
+              />
+              Identify speakers
+            </label>
+
+            <label className="prefs-label prefs-checkbox-label">
+              <input
+                type="checkbox"
+                checked={settings.soniox_endpoint_detection}
+                onChange={(e) => update("soniox_endpoint_detection", e.target.checked)}
+                disabled={!sonioxSelected}
+              />
+              Server-side endpoint detection
+            </label>
+          </div>
+        )}
       </div>
 
       <div className="prefs-advanced">

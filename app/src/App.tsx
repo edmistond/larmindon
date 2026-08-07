@@ -263,7 +263,9 @@ function App() {
     }
 
     const width = 500;
-    const height = 480;
+    // Tall enough that Save stays above the fold with the provider section
+    // expanded.
+    const height = 560;
 
     const main = getCurrentWebviewWindow();
     const scale = await main.scaleFactor();
