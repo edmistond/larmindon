@@ -11,9 +11,25 @@ Uses Nemotron streaming ASR via parakeet-rs.
   `sfw cargo fetch`, or `sfw cargo install ...` instead of running dependency
   fetch/install commands directly.
 
+## Source Control
+
+**Use `jj`, not `git`.** `larmindon` and `larmindon-core` are colocated jj repos
+(`.jj` and `.git` side by side). Colocation makes git commands appear to work —
+jj imports them on the next `jj` invocation — so reaching for git fails silently
+rather than loudly.
+
+Two consequences worth knowing:
+
+- **A detached git HEAD is normal here.** jj keeps git HEAD detached because its
+  working-copy commit is not a git branch. `git branch --contains` reporting
+  "no branch" is expected; those commits are not about to be lost, and do not
+  need rescuing with `git switch -c`.
+- jj has no staging area and the working copy is itself a commit, so there is
+  nothing to `git add`. Describe the working-copy commit and start a new one.
+
 ## Committing Changes
 
-Commit changes frequently in git to checkpoint them.
+Commit changes frequently to checkpoint them.
 
 Before committing, make sure to run `cargo fmt` and `cargo clippy --fix` against
 `app/src-tauri` - address any changes recommended by clippy, if it cannot apply
