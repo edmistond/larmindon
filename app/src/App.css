@@ -25,6 +25,10 @@ html, body {
     --color-accent-red: #d32f2f;
     --color-accent-red-hover: #b71c1c;
     --color-error: #ef5350;
+    /* Provider affordance. Amber, not red: streaming to a third party is a
+       normal working state that must be noticeable, not an error. */
+    --color-provider-local: #7ee081;
+    --color-provider-remote: #f0a83c;
     --color-meter-track: #444;
     --color-meter-fill: #999;
     /* Per-speaker accents. Cycled by index in JS; tuned for the dark surface. */
@@ -59,6 +63,9 @@ html, body {
     --color-accent-red: #f44336;
     --color-accent-red-hover: #d32f2f;
     --color-error: #d32f2f;
+    /* Darkened for contrast against the light surface. */
+    --color-provider-local: #1d7a35;
+    --color-provider-remote: #8a5a06;
     --color-meter-track: #ddd;
     --color-meter-fill: #777;
     --color-speaker-1: #1663b5;
@@ -224,7 +231,20 @@ button {
     display: flex;
     align-items: center;
     gap: 0.45rem;
-    min-width: 5.2rem;
+    /* Wide enough for "(Soniox) Listening" without the meter shifting when the
+       label changes length. */
+    min-width: 11rem;
+}
+
+/* Colour carries the meaning here, not just the word: the question this answers
+   at a glance is whether audio is leaving the machine. Local is deliberately
+   quiet; remote is deliberately not. */
+.provider-tag[data-remote="false"] {
+    color: var(--color-provider-local);
+}
+
+.provider-tag[data-remote="true"] {
+    color: var(--color-provider-remote);
 }
 
 .audio-status-dot {

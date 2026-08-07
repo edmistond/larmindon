@@ -26,6 +26,25 @@ interface Settings {
   font_family: string;
   font_size_px: number;
   theme_mode: string;
+  asr_provider: string;
+}
+
+/**
+ * Display name and, more importantly, whether audio leaves this machine.
+ *
+ * `remote` drives the styling, because the question this affordance exists to
+ * answer at a glance is "is what I am about to say going to a third party?" —
+ * not "which model is it?".
+ */
+const PROVIDER_INFO: Record<string, { label: string; remote: boolean }> = {
+  nemotron: { label: "Local", remote: false },
+  soniox: { label: "Soniox", remote: true },
+};
+
+function providerInfo(id: string) {
+  // An unknown provider is reported as remote. If a future backend is not
+  // wired in here, claiming it is local would be the dangerous way to be wrong.
+  return PROVIDER_INFO[id] ?? { label: id || "Unknown", remote: true };
 }
 
 interface AudioLevel {
@@ -52,7 +71,18 @@ function App() {
     font_family: "",
     font_size_px: 0,
     theme_mode: "dark",
+    asr_provider: "nemotron",
   });
+  /**
+   * The provider the *running* session actually started with.
+   *
+   * Not the configured one: engine settings only take effect on the next Start,
+   * so a provider changed mid-session would otherwise make this label claim
+   * audio is staying local while it is still streaming to a third party. Null
+   * when idle, where the configured provider is the honest answer because it is
+   * what the next Start will use.
+   */
+  const [runningProvider, setRunningProvider] = useState<string | null>(null);
 
   async function refreshDevices() {
     const devs = await invoke<AudioDevice[]>("list_devices");
@@ -95,6 +125,9 @@ function App() {
       (event) => {
         setError(event.payload.text);
         setIsRunning(false);
+        // A fatal ends the session, so the pinned provider has to clear here
+        // too, or the label goes on claiming a remote session is live.
+        setRunningProvider(null);
         resetAudioMeter();
       }
     );
@@ -181,6 +214,7 @@ function App() {
         font_family: s.font_family,
         font_size_px: s.font_size_px,
         theme_mode: s.theme_mode,
+        asr_provider: s.asr_provider,
       });
       // Cache settings for immediate access
       localStorage.setItem('larmindon_settings', JSON.stringify(s));
@@ -194,6 +228,7 @@ function App() {
         font_family: event.payload.font_family,
         font_size_px: event.payload.font_size_px,
         theme_mode: event.payload.theme_mode,
+        asr_provider: event.payload.asr_provider,
       });
       // Cache settings for immediate access
       localStorage.setItem('larmindon_settings', JSON.stringify(event.payload));
@@ -314,6 +349,10 @@ function App() {
       await invoke("start_transcription", {
         deviceId: selectedDevice || null,
       });
+      // Pinned here, after the engine has accepted the session, so the label
+      // reports where audio is actually going rather than where it would go if
+      // restarted now.
+      setRunningProvider(fontSettings.asr_provider);
       setIsRunning(true);
     } catch (e) {
       setError(String(e));
@@ -324,6 +363,7 @@ function App() {
     try {
       await invoke("stop_transcription");
       setIsRunning(false);
+      setRunningProvider(null);
       resetAudioMeter();
     } catch (e) {
       setError(String(e));
@@ -343,6 +383,8 @@ function App() {
   // Read straight from the store; `bumpVersion` is what re-runs this render.
   const visible = blocks(store.current);
   const hasTranscript = visible.length > 0;
+  // While running this is the session's provider, not the configured one.
+  const provider = providerInfo(runningProvider ?? fontSettings.asr_provider);
 
   return (
     <main className="container">
@@ -478,6 +520,9 @@ function App() {
       <div className="audio-status" data-running={isRunning}>
         <div className="audio-status-label">
           <span className="audio-status-dot" aria-hidden="true" />
+          <span className="provider-tag" data-remote={provider.remote}>
+            {`(${provider.label})`}
+          </span>
           <span>{isRunning ? "Listening" : "Idle"}</span>
         </div>
         <div
