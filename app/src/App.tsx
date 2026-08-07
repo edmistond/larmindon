@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useReducer } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, useReducer } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { WebviewWindow, getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -52,6 +52,15 @@ interface AudioLevel {
   vad_active: boolean;
 }
 
+/**
+ * How close to the bottom still counts as pinned. Generous on purpose:
+ * scrollHeight/scrollTop/clientHeight are fractional at non-integer display
+ * scaling, so an exact comparison drifts.
+ */
+const PIN_TOLERANCE_PX = 24;
+/** How long after the last input the user still counts as driving the scroll. */
+const USER_SCROLL_IDLE_MS = 700;
+
 function App() {
   const [devices, setDevices] = useState<AudioDevice[]>([]);
   const [selectedDevice, setSelectedDevice] = useState<string>("");
@@ -67,6 +76,9 @@ function App() {
   const audioMeterRef = useRef<HTMLDivElement>(null);
   const audioMeterFillRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
+  /** True while the user is actively driving the scroll; see `noteUserScrollIntent`. */
+  const userScrollingRef = useRef(false);
+  const userScrollIdleRef = useRef<number | null>(null);
   const [fontSettings, setFontSettings] = useState<Settings>({
     font_family: "",
     font_size_px: 0,
@@ -149,6 +161,9 @@ function App() {
 
     const unlistenClearTranscript = listen("clear-transcript", () => {
       clear(store.current);
+      // There is no backscroll left to be reviewing, so an unpinned view would
+      // otherwise stay stuck away from the bottom for the rest of the session.
+      stickToBottomRef.current = true;
       scheduleTranscriptRender();
     });
 
@@ -265,10 +280,13 @@ function App() {
   }, [fontSettings.theme_mode]);
 
   /**
-   * Coalesces any number of updates within one frame into a single render, and
-   * does the scroll-to-bottom in the same callback so the layout-forcing
-   * `scrollHeight` read happens at most once per frame rather than once per
-   * update.
+   * Coalesces any number of updates within one frame into a single render.
+   *
+   * The scroll-to-bottom deliberately does NOT happen here. `bumpVersion` only
+   * *queues* a React render, so reading `scrollHeight` in this callback reads
+   * the pre-update height — we would scroll to the old bottom, React would then
+   * commit taller content, and the scroll event from our own assignment would
+   * arrive looking exactly like the user scrolling up. See the layout effect.
    */
   function scheduleTranscriptRender() {
     if (renderPending.current) return;
@@ -276,18 +294,58 @@ function App() {
     requestAnimationFrame(() => {
       renderPending.current = false;
       bumpVersion();
-      const el = transcriptRef.current;
-      if (el && stickToBottomRef.current) {
-        el.scrollTop = el.scrollHeight;
-      }
     });
+  }
+
+  // Runs after React has committed, and before paint, so `scrollHeight` is the
+  // height actually on screen. Layout, not passive: doing this in useEffect
+  // would let one frame paint un-scrolled and show a visible jump.
+  useLayoutEffect(() => {
+    const el = transcriptRef.current;
+    if (el && stickToBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
+    }
+  });
+
+  /**
+   * Records that the user is driving the scroll, which is the only thing
+   * allowed to unpin.
+   *
+   * Scroll position alone cannot tell us: an auto-scroll fires a scroll event
+   * indistinguishable from a real one, and anything that changes the content
+   * height out from under it — a window resize, a font-size change, a late
+   * layout pass — makes that event read as a scroll-up.
+   */
+  function noteUserScrollIntent() {
+    userScrollingRef.current = true;
+    if (userScrollIdleRef.current !== null) {
+      window.clearTimeout(userScrollIdleRef.current);
+    }
+    userScrollIdleRef.current = window.setTimeout(() => {
+      userScrollingRef.current = false;
+      userScrollIdleRef.current = null;
+    }, USER_SCROLL_IDLE_MS);
   }
 
   function handleTranscriptScroll() {
     const el = transcriptRef.current;
     if (!el) return;
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    stickToBottomRef.current = distanceFromBottom <= 20;
+    const atBottom =
+      el.scrollHeight - el.scrollTop - el.clientHeight <= PIN_TOLERANCE_PX;
+
+    if (stickToBottomRef.current) {
+      // Pinned: only a deliberate scroll may break the pin. Without this gate,
+      // any height change racing our own auto-scroll silently unpins.
+      if (userScrollingRef.current && !atBottom) {
+        stickToBottomRef.current = false;
+      }
+      return;
+    }
+    // Unpinned: nothing is auto-scrolling, so every event here is the user's.
+    // Coming back to the bottom re-pins, however they got there.
+    if (atBottom) {
+      stickToBottomRef.current = true;
+    }
   }
 
   async function openPreferences() {
@@ -342,8 +400,20 @@ function App() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
+  useEffect(
+    () => () => {
+      if (userScrollIdleRef.current !== null) {
+        window.clearTimeout(userScrollIdleRef.current);
+      }
+    },
+    [],
+  );
+
   async function handleStart() {
     setError("");
+    // A new session follows the live text by default, whatever the last one was
+    // left scrolled to.
+    stickToBottomRef.current = true;
     resetAudioMeter();
     try {
       await invoke("start_transcription", {
@@ -472,6 +542,14 @@ function App() {
         className="transcript"
         ref={transcriptRef}
         onScroll={handleTranscriptScroll}
+        // Every way a user can drive this scroller. `onScroll` alone cannot be
+        // trusted to mean "the user did this" — see noteUserScrollIntent.
+        // pointerdown covers dragging the scrollbar, which fires neither wheel
+        // nor key events.
+        onWheel={noteUserScrollIntent}
+        onPointerDown={noteUserScrollIntent}
+        onTouchMove={noteUserScrollIntent}
+        onKeyDown={noteUserScrollIntent}
         style={{
           ...(fontSettings.font_family ? { fontFamily: fontSettings.font_family } : {}),
           ...(fontSettings.font_size_px > 0 ? { fontSize: `${fontSettings.font_size_px}px` } : {}),
