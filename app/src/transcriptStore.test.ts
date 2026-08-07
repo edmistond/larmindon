@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   apply,
+  blocks,
   clear,
   createStore,
   openText,
@@ -172,5 +173,76 @@ describe("export", () => {
     expect(
       renderText(createStore(), { finalsOnly: true, speakerLabels: true }),
     ).toBe("");
+  });
+});
+
+describe("line breaking", () => {
+  it("never breaks an unattributed stream, so the on-device backend is unchanged", () => {
+    const s = createStore();
+    apply(s, final(1, "The quick brown"));
+    apply(s, final(2, " fox jumps"));
+    apply(s, interim(3, " over the"));
+
+    const b = blocks(s);
+    expect(b.every((x) => !x.breakBefore)).toBe(true);
+  });
+
+  it("breaks at every finalized turn boundary", () => {
+    const s = createStore();
+    apply(s, final(1, "Good morning.", "1"));
+    apply(s, final(2, " Of course.", "2"));
+    apply(s, final(3, " Right.", "1"));
+
+    expect(blocks(s).map((x) => x.breakBefore)).toEqual([false, true, true]);
+  });
+
+  it("breaks between a turn and a still-revising segment by a different speaker", () => {
+    const s = createStore();
+    apply(s, final(1, "Good morning.", "1"));
+    apply(s, interim(2, " Of course", "2"));
+
+    const b = blocks(s);
+    expect(b).toHaveLength(2);
+    expect(b[1]).toMatchObject({ speaker: "2", pending: true, breakBefore: true });
+  });
+
+  it("does not break when a revising segment continues the same speaker", () => {
+    const s = createStore();
+    apply(s, final(1, "It is weaker.", "2"));
+    apply(s, interim(2, " But not alarmingly", "2"));
+
+    expect(blocks(s).map((x) => x.breakBefore)).toEqual([false, false]);
+  });
+
+  it("breaks between two revising segments when the tail spans a turn", () => {
+    // The accumulator splits a provisional tail per speaker, so both arrive as
+    // separate open segments.
+    const s = createStore();
+    apply(s, interim(1, "Sounds good", "1"));
+    apply(s, interim(2, " Thanks for that", "2"));
+
+    const b = blocks(s);
+    expect(b).toHaveLength(2);
+    expect(b.every((x) => x.pending)).toBe(true);
+    expect(b.map((x) => x.breakBefore)).toEqual([false, true]);
+  });
+
+  it("carries the provisional speaker so a live tail is attributed", () => {
+    const s = createStore();
+    apply(s, interim(1, "How", "2"));
+
+    expect(blocks(s)[0]).toMatchObject({ speaker: "2", pending: true });
+  });
+});
+
+describe("export with a split tail", () => {
+  it("labels each revising segment separately rather than merging them", () => {
+    const s = createStore();
+    apply(s, interim(1, "Sounds good", "1"));
+    apply(s, interim(2, " Thanks for that", "2"));
+
+    expect(renderText(s, { finalsOnly: false, speakerLabels: true })).toBe(
+      "[Speaker 1] Sounds good\n\n[Speaker 2] Thanks for that",
+    );
   });
 });

@@ -5,9 +5,9 @@ import { WebviewWindow, getCurrentWebviewWindow } from "@tauri-apps/api/webviewW
 import { LogicalPosition } from "@tauri-apps/api/dpi";
 import {
   apply,
+  blocks,
   clear,
   createStore,
-  openText,
   renderText,
   type TranscriptUpdate,
 } from "./transcriptStore";
@@ -341,9 +341,8 @@ function App() {
   }
 
   // Read straight from the store; `bumpVersion` is what re-runs this render.
-  const turns = store.current.turns;
-  const tail = openText(store.current);
-  const hasTranscript = turns.length > 0 || tail.length > 0;
+  const visible = blocks(store.current);
+  const hasTranscript = visible.length > 0;
 
   return (
     <main className="container">
@@ -441,19 +440,31 @@ function App() {
             {/* No literal spaces between these children: the container is
                 white-space: pre-wrap, so a same-line gap would render as a
                 real space. Newline-separated JSX is stripped and is safe. */}
-            {turns.map((turn, i) => (
+            {visible.map((block, i) => (
               <span
                 key={i}
-                className={turn.speaker === null ? undefined : "turn"}
-                data-speaker={turn.speaker ?? undefined}
+                className={
+                  [
+                    block.speaker === null ? "" : "turn",
+                    block.pending ? "transient" : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ") || undefined
+                }
+                data-speaker={block.speaker ?? undefined}
               >
-                {turn.speaker !== null && (
-                  <span className="speaker-tag">{`[S${turn.speaker}] `}</span>
+                {/* A literal newline, not a margin: the container is
+                    white-space: pre-wrap and these spans are inline, so this is
+                    what actually breaks the line. */}
+                {block.breakBefore && "\n"}
+                {block.speaker !== null && (
+                  <span className="speaker-tag">{`[S${block.speaker}] `}</span>
                 )}
-                {i === 0 || turn.speaker !== null ? turn.text.trimStart() : turn.text}
+                {i === 0 || block.breakBefore || block.speaker !== null
+                  ? block.text.trimStart()
+                  : block.text}
               </span>
             ))}
-            {tail && <span className="transient">{tail}</span>}
           </>
         ) : (
           <span className="placeholder">

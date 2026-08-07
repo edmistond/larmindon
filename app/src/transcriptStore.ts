@@ -94,6 +94,38 @@ export function openText(s: Store): string {
   return out;
 }
 
+/**
+ * Everything to draw, finalized turns then still-revising segments, as one
+ * list. `breakBefore` marks where the speaker changes from the previous block,
+ * which is where the rendering puts a line break.
+ *
+ * Turns are already folded by consecutive speaker, so adjacent turns always
+ * differ and every turn boundary breaks. An unattributed stream — every speaker
+ * `null`, which is what a backend without diarization produces — never breaks,
+ * so it renders exactly as it always did.
+ */
+export interface Block {
+  speaker: string | null;
+  text: string;
+  pending: boolean;
+  breakBefore: boolean;
+}
+
+export function blocks(s: Store): Block[] {
+  const out: Block[] = [];
+  const push = (speaker: string | null, text: string, pending: boolean) => {
+    out.push({
+      speaker,
+      text,
+      pending,
+      breakBefore: out.length > 0 && out[out.length - 1].speaker !== speaker,
+    });
+  };
+  for (const turn of s.turns) push(turn.speaker, turn.text, false);
+  for (const seg of s.open.values()) push(seg.speaker, seg.text, true);
+  return out;
+}
+
 export interface RenderOptions {
   /** Exclude segments that are still being revised. */
   finalsOnly: boolean;
@@ -120,8 +152,17 @@ export function renderText(s: Store, opts: RenderOptions): string {
     );
   }
   if (!opts.finalsOnly) {
-    const tail = openText(s).trim();
-    if (tail) parts.push(tail);
+    // Each open segment separately, so a tail spanning a turn boundary copies
+    // with both speakers attributed rather than merged under one label.
+    for (const seg of s.open.values()) {
+      const body = seg.text.trim();
+      if (!body) continue;
+      parts.push(
+        opts.speakerLabels && seg.speaker !== null
+          ? `[Speaker ${seg.speaker}] ${body}`
+          : body,
+      );
+    }
   }
   return parts.join("\n\n");
 }
