@@ -29,7 +29,11 @@ Two consequences worth knowing:
 
 ## Committing Changes
 
-Commit changes frequently to checkpoint them.
+Commit changes frequently to checkpoint them. **Default to committing at the end
+of every turn that touched files**, without waiting to be asked — the point is
+cheap rollback granularity, not tidy history. A turn's worth of work is the right
+unit: if it turns out badly, `jj` can drop or edit exactly that commit. Squashing
+later is easy; recovering an uncommitted mixture of three turns' edits is not.
 
 Before committing, make sure to run `cargo fmt` and `cargo clippy --fix` against
 `app/src-tauri` - address any changes recommended by clippy, if it cannot apply
@@ -88,18 +92,21 @@ Example: `CHUNK_MS=160 INTRA_THREADS=1 npm run tauri dev`
 
 ```sh
 npm run tauri dev -- -- --features webgpu    # macOS (Metal via WebGPU)
-npm run tauri dev -- -- --features directml  # Windows
+npm run tauri:directml:dev                   # Windows (DirectML)
 npm run tauri:webgpu                         # macOS release bundle
+npm run tauri:directml                       # Windows release bundle
 ```
 
 Do not use `npm run tauri build -- --features webgpu` for macOS WebGPU release builds.
 It skips `src-tauri/webgpu.conf.json`, so the `.app` will link `@rpath/libwebgpu_dawn.dylib`
 without bundling that dylib into `Contents/Frameworks`.
 
-Note: GPU acceleration is experimental; CPU inference is default. When adding a new
-execution provider feature flag in `Cargo.toml`, you must also wire it up in
-`audio_engine.rs` via `ExecutionConfig::with_execution_provider()` — the feature flag
-alone only makes the provider available at compile time.
+Note: GPU acceleration is experimental; CPU inference is default. A new execution
+provider needs a feature flag in both `app/src-tauri/Cargo.toml` and
+`larmindon-core/Cargo.toml`, and must then be wired up in
+`larmindon-core/src/asr/nemotron.rs` via `ExecutionConfig::with_execution_provider()`
+behind a `#[cfg(feature = "...")]` block — the feature flag alone only makes the
+provider available at compile time.
 
 ## Platform Gotchas
 

@@ -182,7 +182,7 @@ Optional Cargo features can be enabled for GPU-accelerated inference:
 npm run tauri dev -- -- --features webgpu
 
 # Windows - DirectML
-npm run tauri dev -- -- --features directml
+npm run tauri:directml:dev
 ```
 
 For release `.app` builds with WebGPU, use the merge config to bundle `libwebgpu_dawn.dylib` into the `.app`:
@@ -194,6 +194,14 @@ npm run tauri:webgpu
 Use `npm run tauri:webgpu:full` for the full configured bundle set, including DMG packaging.
 
 The generic `npm run tauri build -- --features webgpu` path does not apply that merge config and will produce a `.app` that crashes at launch because `@rpath/libwebgpu_dawn.dylib` is missing.
+
+For a Windows DirectML release build:
+
+```sh
+npm run tauri:directml
+```
+
+No merge config is involved here, unlike the macOS WebGPU case — this produces `larmindon.exe` plus the MSI and NSIS bundles.
 
 Note: WebGPU is marked experimental by parakeet-rs. On Apple Silicon, it uses Metal under the hood and reduces CPU load by offloading inference to the GPU, though the improvement is modest (~10%) due to the unified memory architecture.
 

@@ -11,7 +11,9 @@
     "test": "vitest run",
     "tauri": "tauri",
     "tauri:webgpu": "tauri build --config src-tauri/webgpu.conf.json --features webgpu --bundles app",
-    "tauri:webgpu:full": "tauri build --config src-tauri/webgpu.conf.json --features webgpu"
+    "tauri:webgpu:full": "tauri build --config src-tauri/webgpu.conf.json --features webgpu",
+    "tauri:directml": "tauri build --features directml",
+    "tauri:directml:dev": "tauri dev --features directml"
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.0",
