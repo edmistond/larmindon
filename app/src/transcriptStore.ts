@@ -21,9 +21,17 @@ export interface Turn {
   text: string;
 }
 
+export interface RecentFinal {
+  segment_id: number;
+  speaker: string | null;
+  text: string;
+}
+
 export interface Store {
   /** Finalized text, folded by consecutive speaker. */
   turns: Turn[];
+  /** Bounded segment history for low-cost caption rendering. */
+  recentFinals: RecentFinal[];
   /** Segments still being revised, keyed by id, in arrival order. */
   open: Map<number, { speaker: string | null; text: string }>;
   /** Ids already folded, so a repeated final can never double-append. */
@@ -33,9 +41,12 @@ export interface Store {
   lastSeenId: number;
 }
 
+const MAX_RECENT_FINALS = 64;
+
 export function createStore(): Store {
   return {
     turns: [],
+    recentFinals: [],
     open: new Map(),
     folded: new Set(),
     minAcceptedId: 0,
@@ -52,6 +63,10 @@ export function apply(s: Store, u: TranscriptUpdate): boolean {
   if (u.segment_id > s.lastSeenId) s.lastSeenId = u.segment_id;
 
   if (!u.is_final) {
+    const current = s.open.get(u.segment_id);
+    if (current && current.speaker === u.speaker && current.text === u.text) {
+      return false;
+    }
     s.open.set(u.segment_id, { speaker: u.speaker, text: u.text });
     return true;
   }
@@ -65,6 +80,15 @@ export function apply(s: Store, u: TranscriptUpdate): boolean {
   // Finalizing with empty text retracts a segment that was shown provisionally
   // but produced nothing. Folding it would leave a blank turn behind.
   if (u.text === "") return wasOpen;
+
+  s.recentFinals.push({
+    segment_id: u.segment_id,
+    speaker: u.speaker,
+    text: u.text,
+  });
+  if (s.recentFinals.length > MAX_RECENT_FINALS) {
+    s.recentFinals.splice(0, s.recentFinals.length - MAX_RECENT_FINALS);
+  }
 
   const last = s.turns[s.turns.length - 1];
   if (last && last.speaker === u.speaker) {
@@ -82,9 +106,93 @@ export function apply(s: Store, u: TranscriptUpdate): boolean {
  */
 export function clear(s: Store): void {
   s.turns = [];
+  s.recentFinals = [];
   s.open.clear();
   s.folded.clear();
   s.minAcceptedId = s.lastSeenId + 1;
+}
+
+export interface CaptionSegment {
+  segment_id: number;
+  speaker: string | null;
+  text: string;
+  truncated: boolean;
+}
+
+/**
+ * Returns only the newest caption fragments that fit the requested budget.
+ *
+ * This deliberately works backwards over bounded segment history instead of
+ * serializing the complete transcript. Overlay rendering therefore stays
+ * constant-cost even after a long transcription session.
+ */
+function tailCaptionSegments(
+  segments: Array<{
+    segment_id: number;
+    speaker: string | null;
+    text: string;
+  }>,
+  maxChars: number,
+): CaptionSegment[] {
+  if (maxChars <= 0) return [];
+
+  const out: CaptionSegment[] = [];
+  let remaining = maxChars;
+
+  for (let i = segments.length - 1; i >= 0 && remaining > 0; i -= 1) {
+    const segment = segments[i];
+    // Slice before normalizing so a pathological long segment cannot make the
+    // overlay scan or allocate the complete segment on every update.
+    const bounded =
+      segment.text.length > remaining * 3
+        ? segment.text.slice(-(remaining * 3))
+        : segment.text;
+    const normalized = bounded.replace(/\s+/g, " ");
+    if (!normalized.trim()) continue;
+
+    let text = normalized;
+    let truncated = bounded.length < segment.text.length;
+    if (text.length > remaining) {
+      text = text.slice(-remaining);
+      truncated = true;
+
+      // Avoid beginning the visible window in the middle of a word when a
+      // nearby boundary is available.
+      const firstSpace = text.indexOf(" ");
+      if (firstSpace > 0 && firstSpace < text.length - 1) {
+        text = text.slice(firstSpace + 1);
+      }
+    }
+
+    out.unshift({
+      segment_id: segment.segment_id,
+      speaker: segment.speaker,
+      text,
+      truncated,
+    });
+    remaining -= text.length;
+    if (truncated) break;
+  }
+
+  return out;
+}
+
+export function settledCaptionSegments(
+  s: Store,
+  maxChars: number,
+): CaptionSegment[] {
+  return tailCaptionSegments(s.recentFinals, maxChars);
+}
+
+export function liveCaptionSegments(
+  s: Store,
+  maxChars: number,
+): CaptionSegment[] {
+  const open = Array.from(s.open, ([segment_id, segment]) => ({
+    segment_id,
+    ...segment,
+  }));
+  return tailCaptionSegments(open, maxChars);
 }
 
 /** The still-revising tail, as one string. */

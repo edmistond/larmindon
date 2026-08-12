@@ -11,7 +11,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use tauri::menu::{Menu, MenuEvent, MenuItem, SubmenuBuilder};
-use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 const CAPTION_OVERLAY_LABEL: &str = "caption_overlay";
 
@@ -142,8 +142,59 @@ async fn open_caption_overlay(app_handle: tauri::AppHandle) -> Result<(), String
     show_caption_overlay(&app_handle)
 }
 
+fn remove_caption_overlay_menu(window: &WebviewWindow) -> Result<(), String> {
+    // macOS has one application menu in the system menu bar rather than a menu
+    // attached to each window. On Windows and Linux, the app-wide menu is
+    // inherited by new windows unless it is explicitly removed.
+    #[cfg(not(target_os = "macos"))]
+    window.remove_menu().map_err(|e| e.to_string())?;
+
+    #[cfg(target_os = "macos")]
+    let _ = window;
+
+    Ok(())
+}
+
+fn set_caption_overlay_interaction(
+    window: &WebviewWindow,
+    interactive: bool,
+) -> Result<(), String> {
+    if interactive {
+        // Restore hit testing before focus so the placement controls are ready
+        // when the window is raised.
+        window
+            .set_ignore_cursor_events(false)
+            .map_err(|e| e.to_string())?;
+        window.set_focusable(true).map_err(|e| e.to_string())?;
+    } else {
+        // If a platform rejects the focusability change, fail while the
+        // toolbar is still clickable rather than stranding a click-through
+        // window that the UI believes is interactive.
+        window.set_focusable(false).map_err(|e| e.to_string())?;
+        window
+            .set_ignore_cursor_events(true)
+            .map_err(|e| e.to_string())?;
+    }
+    window
+        .emit("overlay-interaction-changed", interactive)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_caption_overlay_interactive(
+    app_handle: tauri::AppHandle,
+    interactive: bool,
+) -> Result<(), String> {
+    let window = app_handle
+        .get_webview_window(CAPTION_OVERLAY_LABEL)
+        .ok_or_else(|| "Caption overlay is not open".to_string())?;
+    set_caption_overlay_interaction(&window, interactive)
+}
+
 fn show_caption_overlay(app_handle: &tauri::AppHandle) -> Result<(), String> {
     if let Some(window) = app_handle.get_webview_window(CAPTION_OVERLAY_LABEL) {
+        remove_caption_overlay_menu(&window)?;
+        set_caption_overlay_interaction(&window, true)?;
         window.show().map_err(|e| e.to_string())?;
         window.set_focus().map_err(|e| e.to_string())?;
         return Ok(());
@@ -151,7 +202,7 @@ fn show_caption_overlay(app_handle: &tauri::AppHandle) -> Result<(), String> {
 
     // Window creation on Windows is safer from async commands or separate
     // threads. This helper is used by both an async command and the menu path.
-    WebviewWindowBuilder::new(
+    let window = WebviewWindowBuilder::new(
         app_handle,
         CAPTION_OVERLAY_LABEL,
         WebviewUrl::App("overlay.html".into()),
@@ -165,8 +216,10 @@ fn show_caption_overlay(app_handle: &tauri::AppHandle) -> Result<(), String> {
     .always_on_top(true)
     .skip_taskbar(true)
     .build()
-    .map(|_| ())
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+
+    remove_caption_overlay_menu(&window)?;
+    set_caption_overlay_interaction(&window, true)
 }
 
 fn toggle_caption_overlay(app_handle: &tauri::AppHandle) -> Result<(), String> {
@@ -174,6 +227,8 @@ fn toggle_caption_overlay(app_handle: &tauri::AppHandle) -> Result<(), String> {
         if window.is_visible().map_err(|e| e.to_string())? {
             window.hide().map_err(|e| e.to_string())
         } else {
+            remove_caption_overlay_menu(&window)?;
+            set_caption_overlay_interaction(&window, true)?;
             window.show().map_err(|e| e.to_string())?;
             window.set_focus().map_err(|e| e.to_string())
         }
@@ -536,6 +591,7 @@ pub fn run() {
             stop_transcription,
             switch_source,
             open_caption_overlay,
+            set_caption_overlay_interactive,
             get_settings,
             save_settings,
             get_default_settings,

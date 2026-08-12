@@ -4,8 +4,10 @@ import {
   blocks,
   clear,
   createStore,
+  liveCaptionSegments,
   openText,
   renderText,
+  settledCaptionSegments,
   type TranscriptUpdate,
 } from "./transcriptStore";
 
@@ -59,6 +61,14 @@ describe("revision", () => {
     expect(s.turns).toHaveLength(0);
   });
 
+  it("does not report an unchanged provisional segment as a visual change", () => {
+    const s = createStore();
+    expect(apply(s, interim(1, "How are", "1"))).toBe(true);
+    expect(apply(s, interim(1, "How are", "1"))).toBe(false);
+    expect(apply(s, interim(1, "How are", "2"))).toBe(true);
+    expect(apply(s, interim(1, "How are you", "2"))).toBe(true);
+  });
+
   it("moves a segment from open to folded when it finalizes", () => {
     const s = createStore();
     apply(s, interim(1, "How are yo"));
@@ -93,6 +103,69 @@ describe("revision", () => {
 
     expect(s.turns[0].text).toBe("Settled.");
     expect(openText(s)).toBe(" still moving");
+  });
+});
+
+describe("bounded overlay captions", () => {
+  it("keeps finalized segment boundaries for stable caption rendering", () => {
+    const s = createStore();
+    apply(s, final(1, "Hello", "1"));
+    apply(s, final(2, " there.", "1"));
+    apply(s, final(3, " Hi back.", "2"));
+
+    expect(settledCaptionSegments(s, 100)).toEqual([
+      { segment_id: 1, speaker: "1", text: "Hello", truncated: false },
+      { segment_id: 2, speaker: "1", text: " there.", truncated: false },
+      { segment_id: 3, speaker: "2", text: " Hi back.", truncated: false },
+    ]);
+  });
+
+  it("returns a bounded word-aligned tail without serializing old text", () => {
+    const s = createStore();
+    apply(s, final(1, "This old prefix should not be visible"));
+    apply(s, final(2, " newest words stay"));
+
+    const visible = settledCaptionSegments(s, 12);
+    expect(visible).toEqual([
+      {
+        segment_id: 2,
+        speaker: null,
+        text: "words stay",
+        truncated: true,
+      },
+    ]);
+    expect(visible.reduce((sum, segment) => sum + segment.text.length, 0)).toBeLessThanOrEqual(
+      12,
+    );
+  });
+
+  it("keeps the revising lane separate from settled captions", () => {
+    const s = createStore();
+    apply(s, final(1, "Settled.", "1"));
+    apply(s, interim(2, " Still changing", "2"));
+
+    expect(settledCaptionSegments(s, 100).map((segment) => segment.text)).toEqual([
+      "Settled.",
+    ]);
+    expect(liveCaptionSegments(s, 100)).toEqual([
+      {
+        segment_id: 2,
+        speaker: "2",
+        text: " Still changing",
+        truncated: false,
+      },
+    ]);
+  });
+
+  it("clears both settled and live caption lanes", () => {
+    const s = createStore();
+    apply(s, final(1, "Settled."));
+    apply(s, interim(2, " pending"));
+
+    clear(s);
+
+    expect(settledCaptionSegments(s, 100)).toEqual([]);
+    expect(liveCaptionSegments(s, 100)).toEqual([]);
   });
 });
 
