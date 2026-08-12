@@ -137,6 +137,11 @@ fn switch_source(
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn open_caption_overlay(app_handle: tauri::AppHandle) -> Result<(), String> {
+    show_caption_overlay(&app_handle)
+}
+
 fn show_caption_overlay(app_handle: &tauri::AppHandle) -> Result<(), String> {
     if let Some(window) = app_handle.get_webview_window(CAPTION_OVERLAY_LABEL) {
         window.show().map_err(|e| e.to_string())?;
@@ -357,6 +362,20 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .on_window_event(|window, event| {
+            if window.label() == "main"
+                && matches!(event, tauri::WindowEvent::CloseRequested { .. })
+            {
+                if let Some(overlay) = window
+                    .app_handle()
+                    .get_webview_window(CAPTION_OVERLAY_LABEL)
+                {
+                    if let Err(e) = overlay.close() {
+                        eprintln!("Failed to close caption overlay: {}", e);
+                    }
+                }
+            }
+        })
         .on_menu_event(|app, event: MenuEvent| match event.id().as_ref() {
             "clear_transcript" => {
                 let _ = app.emit("clear-transcript", ());
@@ -516,6 +535,7 @@ pub fn run() {
             start_transcription,
             stop_transcription,
             switch_source,
+            open_caption_overlay,
             get_settings,
             save_settings,
             get_default_settings,
