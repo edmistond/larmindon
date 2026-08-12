@@ -75,11 +75,10 @@ body {
 }
 
 .caption-text {
+    position: relative;
     flex: 1;
     min-height: 0;
-    display: flex;
-    align-items: flex-end;
-    justify-content: flex-start;
+    box-sizing: border-box;
     padding: 3px 18px 6px 32px;
     color: #ffffff;
     font-size: clamp(18px, 15vh, 28px);
@@ -93,31 +92,20 @@ body {
     contain: layout paint style;
 }
 
-.caption-stack {
-    width: 100%;
-    height: 100%;
-    display: grid;
-    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
-    gap: 2px;
+.caption-viewport {
+    position: absolute;
+    right: 18px;
+    bottom: 6px;
+    left: 32px;
+    height: calc(100% - 9px);
     overflow: hidden;
 }
 
-.caption-row {
-    min-width: 0;
-    min-height: 0;
-    display: flex;
-    align-items: flex-end;
-    overflow: hidden;
-}
-
-.caption-stack:not(.has-live) .caption-settled {
-    grid-row: 1 / 3;
-}
-
-.caption-row-inner {
-    width: 100%;
-    max-height: 100%;
-    overflow: hidden;
+.caption-flow {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    left: 0;
 }
 
 .caption-segment,

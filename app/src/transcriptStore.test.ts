@@ -4,10 +4,8 @@ import {
   blocks,
   clear,
   createStore,
-  liveCaptionSegments,
   openText,
   renderText,
-  settledCaptionSegments,
   type TranscriptUpdate,
 } from "./transcriptStore";
 
@@ -106,66 +104,95 @@ describe("revision", () => {
   });
 });
 
-describe("bounded overlay captions", () => {
-  it("keeps finalized segment boundaries for stable caption rendering", () => {
+describe("unified overlay captions", () => {
+  it("keeps finalized and provisional segments in one ordered stream", () => {
     const s = createStore();
     apply(s, final(1, "Hello", "1"));
-    apply(s, final(2, " there.", "1"));
-    apply(s, final(3, " Hi back.", "2"));
+    apply(s, interim(2, " there", "1"));
+    apply(s, interim(3, " Hi", "2"));
 
-    expect(settledCaptionSegments(s, 100)).toEqual([
-      { segment_id: 1, speaker: "1", text: "Hello", truncated: false },
-      { segment_id: 2, speaker: "1", text: " there.", truncated: false },
-      { segment_id: 3, speaker: "2", text: " Hi back.", truncated: false },
+    expect(s.captions).toEqual([
+      { segment_id: 1, is_final: true, speaker: "1", text: "Hello" },
+      { segment_id: 2, is_final: false, speaker: "1", text: " there" },
+      { segment_id: 3, is_final: false, speaker: "2", text: " Hi" },
     ]);
   });
 
-  it("returns a bounded word-aligned tail without serializing old text", () => {
+  it("finalizes a visible provisional segment in place", () => {
     const s = createStore();
-    apply(s, final(1, "This old prefix should not be visible"));
-    apply(s, final(2, " newest words stay"));
+    apply(s, final(1, "Before. ", "1"));
+    apply(s, interim(2, "How are yo", "2"));
 
-    const visible = settledCaptionSegments(s, 12);
-    expect(visible).toEqual([
+    apply(s, final(2, "How are you?", "2"));
+
+    expect(s.captions).toEqual([
       {
-        segment_id: 2,
-        speaker: null,
-        text: "words stay",
-        truncated: true,
+        segment_id: 1,
+        is_final: true,
+        speaker: "1",
+        text: "Before. ",
       },
-    ]);
-    expect(visible.reduce((sum, segment) => sum + segment.text.length, 0)).toBeLessThanOrEqual(
-      12,
-    );
-  });
-
-  it("keeps the revising lane separate from settled captions", () => {
-    const s = createStore();
-    apply(s, final(1, "Settled.", "1"));
-    apply(s, interim(2, " Still changing", "2"));
-
-    expect(settledCaptionSegments(s, 100).map((segment) => segment.text)).toEqual([
-      "Settled.",
-    ]);
-    expect(liveCaptionSegments(s, 100)).toEqual([
       {
         segment_id: 2,
+        is_final: true,
         speaker: "2",
-        text: " Still changing",
-        truncated: false,
+        text: "How are you?",
       },
     ]);
   });
 
-  it("clears both settled and live caption lanes", () => {
+  it("revises text and speaker on the existing caption entry", () => {
+    const s = createStore();
+    apply(s, interim(1, "Maybe", "2"));
+    apply(s, interim(1, "Actually", "1"));
+
+    expect(s.captions).toEqual([
+      { segment_id: 1, is_final: false, speaker: "1", text: "Actually" },
+    ]);
+  });
+
+  it("removes a retracted provisional segment", () => {
+    const s = createStore();
+    apply(s, interim(1, "false start"));
+    apply(s, final(1, ""));
+
+    expect(s.captions).toEqual([]);
+  });
+
+  it("retires whole old finalized segments to keep rendering bounded", () => {
+    const s = createStore();
+    for (let id = 1; id <= 60; id += 1) {
+      apply(s, final(id, `segment-${id} `));
+    }
+
+    expect(s.captions.length).toBeLessThanOrEqual(48);
+    expect(s.captions[0].segment_id).toBeGreaterThan(1);
+    expect(s.captions[s.captions.length - 1]).toEqual({
+      segment_id: 60,
+      is_final: true,
+      speaker: null,
+      text: "segment-60 ",
+    });
+  });
+
+  it("never retires provisional speech to satisfy the history budget", () => {
+    const s = createStore();
+    for (let id = 1; id <= 50; id += 1) {
+      apply(s, interim(id, `pending-${id} `));
+    }
+
+    expect(s.captions).toHaveLength(50);
+    expect(s.captions.every((segment) => !segment.is_final)).toBe(true);
+  });
+
+  it("clears the caption stream", () => {
     const s = createStore();
     apply(s, final(1, "Settled."));
     apply(s, interim(2, " pending"));
 
     clear(s);
 
-    expect(settledCaptionSegments(s, 100)).toEqual([]);
-    expect(liveCaptionSegments(s, 100)).toEqual([]);
+    expect(s.captions).toEqual([]);
   });
 });
 

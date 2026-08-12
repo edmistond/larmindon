@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useLayoutEffect,
   useMemo,
   useReducer,
   useRef,
@@ -13,8 +14,6 @@ import {
   apply,
   clear,
   createStore,
-  liveCaptionSegments,
-  settledCaptionSegments,
   type CaptionSegment,
   type TranscriptUpdate,
 } from "./transcriptStore";
@@ -25,39 +24,62 @@ interface Settings {
   font_size_px: number;
 }
 
-const MAX_SETTLED_CAPTION_CHARS = 110;
-const MAX_LIVE_CAPTION_CHARS = 80;
 const OVERLAY_RENDER_INTERVAL_MS = 80;
 
-function CaptionSegments({ segments }: { segments: CaptionSegment[] }) {
-  let previousSpeaker: string | null | undefined;
+interface CaptionTurn {
+  key: number;
+  speaker: string | null;
+  segments: CaptionSegment[];
+}
 
-  return segments.map((segment, index) => {
-    const showSpeaker =
-      segment.speaker !== null &&
-      (index === 0 || segment.speaker !== previousSpeaker);
-    previousSpeaker = segment.speaker;
+function groupCaptionTurns(segments: CaptionSegment[]): CaptionTurn[] {
+  const turns: CaptionTurn[] = [];
+  for (const segment of segments) {
+    if (!segment.text.trim()) continue;
 
-    return (
-      <span className="caption-segment" key={segment.segment_id}>
-        {showSpeaker && (
-          <span className="caption-speaker">[S{segment.speaker}] </span>
-        )}
-        {segment.truncated && <span aria-hidden="true">&hellip;</span>}
-        {segment.text}
-      </span>
-    );
-  });
+    const previous = turns[turns.length - 1];
+    if (previous && previous.speaker === segment.speaker) {
+      previous.segments.push(segment);
+    } else {
+      turns.push({
+        key: segment.segment_id,
+        speaker: segment.speaker,
+        segments: [segment],
+      });
+    }
+  }
+  return turns;
+}
+
+function CaptionTurns({ turns }: { turns: CaptionTurn[] }) {
+  return turns.map((turn) => (
+    <div className="caption-turn" key={turn.key}>
+      {turn.speaker !== null && (
+        <span className="caption-speaker">[S{turn.speaker}] </span>
+      )}
+      {turn.segments.map((segment, index) => (
+        <span
+          className={`caption-segment${segment.is_final ? "" : " pending"}`}
+          data-final={segment.is_final}
+          key={segment.segment_id}
+        >
+          {index === 0 ? segment.text.trimStart() : segment.text}
+        </span>
+      ))}
+    </div>
+  ));
 }
 
 function CaptionOverlay() {
-  // Truncation is applied at render time only. The store keeps the full
-  // transcript, so a segment can still be revised after its text has scrolled
-  // out of the visible window.
+  // Caption history is bounded by whole segments in the store. Provisional
+  // segments remain in that same ordered stream when they finalize, so text
+  // never has to jump between separate live and settled regions.
   const store = useRef(createStore());
   const [version, bumpVersion] = useReducer((n: number) => n + 1, 0);
   const renderTimer = useRef<number | null>(null);
   const lastRenderAt = useRef(0);
+  const captionTextRef = useRef<HTMLDivElement>(null);
+  const captionViewportRef = useRef<HTMLDivElement>(null);
   const [interactive, setInteractive] = useState(true);
   const [fontSettings, setFontSettings] = useState<Settings>({
     font_family: "",
@@ -127,15 +149,10 @@ function CaptionOverlay() {
     }, delay);
   }
 
-  const captions = useMemo(() => {
-    return {
-      settled: settledCaptionSegments(
-        store.current,
-        MAX_SETTLED_CAPTION_CHARS,
-      ),
-      live: liveCaptionSegments(store.current, MAX_LIVE_CAPTION_CHARS),
-    };
-  }, [version]);
+  const captionTurns = useMemo(
+    () => groupCaptionTurns(store.current.captions),
+    [version],
+  );
 
   const textStyle = useMemo(
     () => ({
@@ -146,6 +163,33 @@ function CaptionOverlay() {
     }),
     [fontSettings],
   );
+
+  useLayoutEffect(() => {
+    const container = captionTextRef.current;
+    const viewport = captionViewportRef.current;
+    if (!container || !viewport) return;
+
+    const fitWholeLines = () => {
+      const style = window.getComputedStyle(container);
+      const lineHeight = Number.parseFloat(style.lineHeight);
+      const availableHeight =
+        container.clientHeight -
+        Number.parseFloat(style.paddingTop) -
+        Number.parseFloat(style.paddingBottom);
+      if (!Number.isFinite(lineHeight) || lineHeight <= 0) return;
+
+      const visibleLines = Math.max(
+        1,
+        Math.floor((availableHeight + 0.5) / lineHeight),
+      );
+      viewport.style.height = `${visibleLines * lineHeight}px`;
+    };
+
+    fitWholeLines();
+    const observer = new ResizeObserver(fitWholeLines);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [fontSettings]);
 
   async function startDragging(event: MouseEvent<HTMLElement>) {
     if (event.button !== 0) {
@@ -166,8 +210,7 @@ function CaptionOverlay() {
     }
   }
 
-  const hasCaption = captions.settled.length > 0 || captions.live.length > 0;
-  const hasLiveCaption = captions.live.length > 0;
+  const hasCaption = captionTurns.length > 0;
 
   return (
     <main className="overlay-shell" data-interactive={interactive}>
@@ -191,26 +234,15 @@ function CaptionOverlay() {
           </button>
         </div>
       )}
-      <div className="caption-text" style={textStyle}>
-        <div
-          className={`caption-stack${hasLiveCaption ? " has-live" : ""}`}
-        >
-          <div className="caption-row caption-settled">
-            <div className="caption-row-inner">
-              {hasCaption ? (
-                <CaptionSegments segments={captions.settled} />
-              ) : (
-                <span className="caption-placeholder">Listening...</span>
-              )}
-            </div>
+      <div className="caption-text" ref={captionTextRef} style={textStyle}>
+        <div className="caption-viewport" ref={captionViewportRef}>
+          <div className="caption-flow">
+            {hasCaption ? (
+              <CaptionTurns turns={captionTurns} />
+            ) : (
+              <span className="caption-placeholder">Listening...</span>
+            )}
           </div>
-          {hasLiveCaption && (
-            <div className="caption-row caption-live">
-              <div className="caption-row-inner">
-                <CaptionSegments segments={captions.live} />
-              </div>
-            </div>
-          )}
         </div>
       </div>
     </main>
