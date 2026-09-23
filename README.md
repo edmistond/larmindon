@@ -152,6 +152,15 @@ graph TB
 
 An animated browser-based visualization of the pipeline is available in [`visualization/`](visualization/index.html) — open `visualization/index.html` in any browser (no build step). It simulates audio data flowing through capture, resampling, AGC, VAD, pre-speech buffering, ASR chunking, replay recovery, diagnostics, and Nemotron inference stages with configurable scenarios (normal speech, silence, intermittent, stuck decoder).
 
+#### Planned audio work
+
+The [audio-capture roadmap](audio-capture-roadmap.md) coordinates the planned
+macOS per-application capture work and the later shared-capture analyzer. The
+detailed plans are [process-level capture](process-level.md) and the
+[spectrogram window](spectrogram.md). This README describes behavior that has
+already shipped; the plan documents describe future work and its validation
+gates.
+
 ## Prerequisites
 
 - **Nemotron streaming model files** downloaded locally (set the model path via Preferences: Cmd/Ctrl+, or the ⚙️ button)
@@ -280,7 +289,10 @@ ARCH=x86_64 ./appimagetool-x86_64.AppImage --appimage-extract-and-run \
 
 ### Windows
 
-Windows WASAPI loopback support is present in the underlying CPAL code but has not been verified.
+On Windows, Larmindon uses a composite backend that combines CPAL input and
+system-audio sources with WASAPI per-process loopback sources. Per-application
+capture is in regular use and is a protected regression boundary for future
+macOS capture and shared-audio changes.
 
 ## Debugging / Diagnostics
 

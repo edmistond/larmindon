@@ -1,5 +1,11 @@
 # Spectrogram and Shared Audio Capture Plan
 
+> **Status:** Planned after macOS process-level capture. This is the detailed
+> plan for Phases 5-6 of the [audio-capture roadmap](audio-capture-roadmap.md).
+> The process-capture feature does not depend on this refactor; the refactor
+> begins only after macOS application capture and its Windows regression gates
+> are stable.
+
 ## Summary
 
 Add a dedicated sound-analysis window to Larmindon with a scrolling
@@ -367,6 +373,11 @@ clear capture/session clock and bounded rolling history.
 - Represent attached consumers explicitly.
 - Give transcription its own bounded, ordered delivery path.
 - Preserve existing transcript, VAD, AGC, diagnostics, and meter behavior.
+- Preserve the Windows and macOS composite application-capture backends as
+  consumers of the same `AudioCapture` contract; do not redesign platform
+  capture while extracting ownership.
+- Initially retain transcription's current resampling path behind a
+  compatibility adapter instead of moving resampling and fan-out in one change.
 - Add independent capture and transcription status.
 - Verify start, stop, reconnect, shutdown, and error behavior on each supported
   platform.
@@ -442,6 +453,8 @@ pipeline, so verification must cover behavior rather than compilation alone.
 - Run frontend tests and production builds.
 - Perform live checks with microphone, system output, and application capture
   where supported.
+- Run the Windows application-capture regression gate after any shared capture
+  trait, lifecycle, or device-routing change.
 - Compare diagnostics with and without the analyzer running.
 
 ## Risks and Mitigations
@@ -493,8 +506,10 @@ outside React state, and pause visible updates when the window is hidden.
 
 ## Recommended Decision
 
-Proceed with the shared capture service first, followed by a Rust-side spectral
-consumer and a Canvas-based analyzer window. This is more work than adding a
-special visualizer-only capture mode, but it matches the intended concurrent
-use, prevents duplicate OS streams, and creates a sound foundation for future
-recording, diagnostics, meters, and speaker-aligned visualization.
+After completing Phases 0-4 of the
+[audio-capture roadmap](audio-capture-roadmap.md), proceed with the shared
+capture service, followed by a Rust-side spectral consumer and a Canvas-based
+analyzer window. This is more work than adding a special visualizer-only
+capture mode, but it matches the intended concurrent use, prevents duplicate
+OS streams, and creates a sound foundation for future recording, diagnostics,
+meters, and speaker-aligned visualization.
