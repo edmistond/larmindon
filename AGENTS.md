@@ -65,10 +65,11 @@ cd app/src-tauri && cargo check
 
 ## Verification
 
-No test suite exists. Verify changes by:
-
-1. Running the app and checking live transcription output
-2. Querying `larmindon_diag.sqlite` (project root) for timing/events data
+- Frontend: the vitest suite in `app/` (`transcriptStore.test.ts`).
+- Engine/ASR: `cargo test` and `bash testdata/check_regression.sh` in
+  `larmindon-core` (see its AGENTS.md for when the gate is required).
+- End to end: run the app and check live transcription, then query
+  `~/.config/larmindon/larmindon_diag.sqlite` for timing/events data.
 
 ## Settings & Environment Variables
 
@@ -131,18 +132,18 @@ Main thread (Tauri)
 
 | File | Purpose |
 |------|---------|
-| `app/src-tauri/src/audio_engine.rs` | Core processing loop, VAD + ASR orchestration, diagnostics logging |
-| `app/src-tauri/src/vad.rs` | Silero VAD wrapper with speech/silence state machine |
+| `../larmindon-core/src/audio_engine.rs` | Core processing loop, VAD + ASR orchestration, diagnostics logging |
+| `../larmindon-core/src/vad.rs` | Silero VAD wrapper with speech/silence state machine |
 | `app/src-tauri/src/lib.rs` | Tauri setup, command handlers, engine thread spawn |
-| `app/src-tauri/src/settings.rs` | Settings persistence, env var overrides, validation |
+| `../larmindon-core/src/settings.rs` | Settings persistence, env var overrides, validation |
 | `app/src/App.tsx` | Main frontend (device selector, transcript display) |
 | `app/src/Preferences.tsx` | Preferences window (model path, chunk size, Nemotron language and diarization, fonts, theme) |
 
 ### Frontend ↔ Backend Interface
 
-**Commands** (invoke from React): `list_devices`, `start_transcription(device_id)`, `stop_transcription`, `switch_source(device_id)`, `get_settings`, `save_settings`, `get_default_settings`, `has_soniox_api_key`, `get_nemotron_languages`, `get_system_theme`, `get_system_fonts`
+**Commands** (invoke from React): `list_devices`, `start_transcription(device_id)`, `stop_transcription`, `switch_source(device_id)`, `open_caption_overlay`, `set_caption_overlay_interactive`, `get_settings`, `save_settings`, `get_default_settings`, `has_soniox_api_key`, `get_nemotron_languages`, `get_system_theme`, `get_system_fonts`
 
-**Events** (emit to React): `transcript-update { segment_id, is_final, text, speaker }`, `transcription-error { text }`, `engine-status { level, text }`, `audio-level { level, vad_active }`, `source-switched { device_id }`, `settings-changed { settings }`, `clear-transcript`, `copy-transcript`, `devices-changed`, `open-preferences`
+**Events** (emit to React): `transcript-update { segment_id, is_final, text, speaker }`, `transcription-error { text }`, `engine-status { level, text }`, `audio-level { level, vad_active }`, `source-switched { device_id }`, `settings-changed { settings }`, `overlay-interaction-changed`, `clear-transcript`, `copy-transcript`, `devices-changed`, `open-preferences`
 
 Transcript is delivered as segments, not appended text. A segment may be
 re-sent with `is_final: false` while a backend revises it, then finalized once;
@@ -159,7 +160,7 @@ one is saved.
 
 ### Windows
 
-Two webview windows: `main` (transcription UI) and `preferences` (settings panel). Defined in `capabilities/default.json`.
+Three webview windows: `main` (transcription UI), `preferences` (settings panel) and `caption_overlay` (floating captions). Defined in `capabilities/default.json`.
 
 ## Decoder Behavior (Hard-Won Context)
 
@@ -175,7 +176,7 @@ Two webview windows: `main` (transcription UI) and `preferences` (settings panel
 
 ## Diagnostics
 
-SQLite database at `larmindon_diag.sqlite` (project root). Tables:
+SQLite database at `~/.config/larmindon/larmindon_diag.sqlite`. Tables:
 - `sessions` — per-transcription session metadata
 - `events` — per-chunk timing (inference_ms, vad_ms, resample_ms, iteration_ms), text preview
 - `vad_events` — speech_start, speech_end, mid_speech_reset, punctuation_reset events
