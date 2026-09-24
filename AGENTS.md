@@ -45,11 +45,23 @@ cd app/src-tauri && cargo check
 
 ## Setup Requirements
 
-* *Model Path* * : Set via Preferences window (Cmd/Ctrl+, or ⚙️ button) or in
- `~/.config/larmindon/settings.json` . Default is `~/projects/prs-nemotron/` .
- Download the
- [Nemotron streaming model files](https://huggingface.co/altunenes/parakeet-rs/tree/main/nemotron-speech-streaming-en-0.6b)
- to your chosen path.
+* **Model Path**: Set via Preferences window (Cmd/Ctrl+, or ⚙️ button) or in
+  `~/.config/larmindon/settings.json`. Default is `~/projects/prs-nemotron/`.
+  Download one of these to your chosen path (`encoder.onnx`,
+  `encoder.onnx.data`, `decoder_joint.onnx`, `tokenizer.model`):
+  * [Nemotron English](https://huggingface.co/altunenes/parakeet-rs/tree/main/nemotron-speech-streaming-en-0.6b)
+  * [Nemotron 3.5 multilingual](https://huggingface.co/altunenes/parakeet-rs/tree/main/nemotron-3.5-asr-streaming-0.6b-onnx)
+    (40 locales; pick one under Preferences → Nemotron → Language, or leave
+    it on auto-detect)
+
+  parakeet-rs tells the two apart from the files, so switching models means
+  changing the path.
+* **Diarization model** (optional): Speaker labels for Nemotron come from
+  [`nemotron3_diar_v3.onnx`](https://huggingface.co/altunenes/parakeet-rs/tree/main/nemotron-3-diarization)
+  (Sortformer v3, ~380 MB), expected at `~/models/nemotron3_diar_v3.onnx`
+  (Preferences → Nemotron → Diarization Model). On by default; without the
+  file, Nemotron runs without speakers. Both models stay loaded between
+  sessions: about 2.4 GB for the encoder plus the diarizer.
 
 ## Verification
 
@@ -69,6 +81,8 @@ Preferences window. Environment variables override saved settings at runtime:
 | `INTRA_THREADS` | 1+ | 2 | ONNX intra-op parallelism |
 | `INTER_THREADS` | 1+ | 1 | ONNX inter-op parallelism |
 | `PUNCTUATION_RESET` | 0/false/no, 1/true/yes | true | Reset decoder at sentence punctuation |
+| `NEMOTRON_LANG` | auto, en-US, es-ES, … | auto | Nemotron 3.5 target language (ignored by the English model) |
+| `NEMOTRON_DIARIZATION` | 0/false/no, 1/true/yes | true | Label Nemotron output with Sortformer speakers |
 | `LARMINDON_AUDIO_BACKEND` | cpal, pipewire | auto | Force audio backend (Linux) |
 
 Example: `CHUNK_MS=160 INTRA_THREADS=1 npm run tauri dev`
@@ -122,17 +136,19 @@ Main thread (Tauri)
 | `app/src-tauri/src/lib.rs` | Tauri setup, command handlers, engine thread spawn |
 | `app/src-tauri/src/settings.rs` | Settings persistence, env var overrides, validation |
 | `app/src/App.tsx` | Main frontend (device selector, transcript display) |
-| `app/src/Preferences.tsx` | Preferences window (model path, chunk size, fonts, theme) |
+| `app/src/Preferences.tsx` | Preferences window (model path, chunk size, Nemotron language and diarization, fonts, theme) |
 
 ### Frontend ↔ Backend Interface
 
-**Commands** (invoke from React): `list_devices`, `start_transcription(device_id)`, `stop_transcription`, `switch_source(device_id)`, `get_settings`, `save_settings`, `get_default_settings`, `has_soniox_api_key`, `get_system_theme`, `get_system_fonts`
+**Commands** (invoke from React): `list_devices`, `start_transcription(device_id)`, `stop_transcription`, `switch_source(device_id)`, `get_settings`, `save_settings`, `get_default_settings`, `has_soniox_api_key`, `get_nemotron_languages`, `get_system_theme`, `get_system_fonts`
 
 **Events** (emit to React): `transcript-update { segment_id, is_final, text, speaker }`, `transcription-error { text }`, `engine-status { level, text }`, `audio-level { level, vad_active }`, `source-switched { device_id }`, `settings-changed { settings }`, `clear-transcript`, `copy-transcript`, `devices-changed`, `open-preferences`
 
 Transcript is delivered as segments, not appended text. A segment may be
 re-sent with `is_final: false` while a backend revises it, then finalized once;
-`text` is always the segment's complete text. `app/src/transcriptStore.ts` folds
+`text` is always the segment's complete text. Nemotron with diarization emits
+each chunk provisionally with the current speaker, then finalizes it about a
+second later with the diarizer's label. `app/src/transcriptStore.ts` folds
 finalized segments into speaker turns and is unit-tested (`pnpm test`).
 
 `get_settings` and `settings-changed` carry the **redacted** settings — the

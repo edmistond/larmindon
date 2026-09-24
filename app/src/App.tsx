@@ -577,10 +577,13 @@ function App() {
                     white-space: pre-wrap and these spans are inline, so this is
                     what actually breaks the line. */}
                 {block.breakBefore && "\n"}
-                {block.speaker !== null && (
+                {/* Only where a turn starts. A still-revising segment that
+                    continues the current speaker's turn is a separate block,
+                    but must read as part of the same line. */}
+                {(i === 0 || block.breakBefore) && block.speaker !== null && (
                   <span className="speaker-tag">{`[S${block.speaker}] `}</span>
                 )}
-                {i === 0 || block.breakBefore || block.speaker !== null
+                {i === 0 || block.breakBefore
                   ? block.text.trimStart()
                   : block.text}
               </span>

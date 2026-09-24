@@ -3,7 +3,7 @@ mod font_enumeration;
 use larmindon_core::asr::TranscriptUpdate;
 use larmindon_core::audio_capture::{ActiveSessionInfo, AudioDevice};
 use larmindon_core::audio_engine::{AudioEngine, Command};
-use larmindon_core::settings::Settings;
+use larmindon_core::settings::{NemotronLanguage, Settings, NEMOTRON_LANGUAGES};
 use larmindon_core::{EngineEventSink, StatusLevel};
 use serde::Serialize;
 use std::sync::atomic::AtomicBool;
@@ -288,6 +288,13 @@ fn save_settings(
 #[tauri::command]
 fn get_default_settings() -> Settings {
     Settings::default()
+}
+
+/// The locales Preferences offers for a multilingual Nemotron model, besides
+/// "auto". Served from core so the list and its validation cannot drift apart.
+#[tauri::command]
+fn get_nemotron_languages() -> Vec<NemotronLanguage> {
+    NEMOTRON_LANGUAGES.to_vec()
 }
 
 #[tauri::command]
@@ -596,6 +603,7 @@ pub fn run() {
             save_settings,
             get_default_settings,
             has_soniox_api_key,
+            get_nemotron_languages,
             get_system_theme,
             get_system_fonts,
         ])

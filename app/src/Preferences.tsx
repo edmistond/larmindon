@@ -13,6 +13,10 @@ interface Settings {
   inter_threads: number;
   punctuation_reset: boolean;
   empty_reset_threshold: number;
+  nemotron_language: string;
+  nemotron_diarization: boolean;
+  diarization_model_path: string;
+  diarization_latency: string;
   font_family: string;
   font_size_px: number;
   theme_mode: string;
@@ -40,6 +44,22 @@ const THEME_OPTIONS = [
   { value: "light", label: "Light" },
   { value: "system", label: "System" },
 ];
+/** Mirrors `NemotronLanguage` in larmindon-core's settings.rs. */
+interface NemotronLanguage {
+  code: string;
+  name: string;
+  tier: "transcription_ready" | "broad_coverage" | "adaptation_ready";
+}
+const LANGUAGE_TIERS: { tier: NemotronLanguage["tier"]; label: string }[] = [
+  { tier: "transcription_ready", label: "Transcription-ready" },
+  { tier: "broad_coverage", label: "Broad coverage" },
+  { tier: "adaptation_ready", label: "Adaptation-ready (lower quality)" },
+];
+const DIARIZATION_LATENCY_OPTIONS = [
+  { value: "low", label: "Low (1.04 s, most accurate)" },
+  { value: "very_low", label: "Very low (0.64 s)" },
+  { value: "ultra", label: "Ultra low (0.32 s, least accurate)" },
+];
 const PROVIDER_OPTIONS = [
   { value: "nemotron", label: "Nemotron (on-device)" },
   { value: "soniox", label: "Soniox (cloud)" },
@@ -56,12 +76,15 @@ function Preferences() {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [agcOpen, setAgcOpen] = useState(false);
   const [providerOpen, setProviderOpen] = useState(false);
+  const [nemotronOpen, setNemotronOpen] = useState(false);
+  const [languages, setLanguages] = useState<NemotronLanguage[]>([]);
   // Presence only. The value itself never reaches this window.
   const [hasApiKey, setHasApiKey] = useState(false);
 
   useEffect(() => {
     loadSettings();
     loadApiKeyPresence();
+    loadLanguages();
     loadFonts();
 
     // Listen for settings changes from other windows
@@ -81,6 +104,15 @@ function Preferences() {
       setHasApiKey(await invoke<boolean>("has_soniox_api_key"));
     } catch (e) {
       console.error("Failed to check for a stored Soniox key:", e);
+    }
+  }
+
+  async function loadLanguages() {
+    try {
+      setLanguages(await invoke<NemotronLanguage[]>("get_nemotron_languages"));
+    } catch (e) {
+      // "auto" is still offered, and it is the default.
+      console.error("Failed to load Nemotron languages:", e);
     }
   }
 
@@ -179,6 +211,18 @@ function Preferences() {
     }
   }
 
+  async function handleBrowseDiarizationModel() {
+    const selected = await open({
+      title: "Select Diarization Model",
+      defaultPath: settings?.diarization_model_path || undefined,
+      filters: [{ name: "ONNX", extensions: ["onnx"] }],
+    });
+    if (selected) {
+      setSettings((s) => (s ? { ...s, diarization_model_path: selected } : s));
+      setSaved(false);
+    }
+  }
+
   async function handleBrowseDiagDb() {
     const selected = await save({
       title: "Diagnostic Database Path",
@@ -209,6 +253,9 @@ function Preferences() {
 
   // Disabled rather than unmounted, matching the diagnostics path field.
   const sonioxSelected = settings.asr_provider === "soniox";
+  const nemotronSelected = settings.asr_provider === "nemotron";
+  const diarizationControlsEnabled =
+    nemotronSelected && settings.nemotron_diarization;
 
   return (
     <div className="prefs-container">
@@ -481,6 +528,99 @@ function Preferences() {
               />
               Server-side endpoint detection
             </label>
+          </div>
+        )}
+      </div>
+
+      <div className="prefs-advanced">
+        <button
+          type="button"
+          className="prefs-advanced-toggle"
+          onClick={() => setNemotronOpen(!nemotronOpen)}
+        >
+          <span className={`prefs-advanced-arrow ${nemotronOpen ? "open" : ""}`}>▶</span>
+          Nemotron
+        </button>
+        {nemotronOpen && (
+          <div className="prefs-advanced-content">
+            <label className="prefs-label">
+              Language (multilingual models only)
+              <select
+                value={settings.nemotron_language}
+                onChange={(e) => update("nemotron_language", e.target.value)}
+                disabled={!nemotronSelected}
+                className="prefs-select"
+              >
+                <option value="auto">Auto-detect</option>
+                {LANGUAGE_TIERS.map(({ tier, label }) => (
+                  <optgroup key={tier} label={label}>
+                    {languages
+                      .filter((l) => l.tier === tier)
+                      .map((l) => (
+                        <option key={l.code} value={l.code}>
+                          {l.name} ({l.code})
+                        </option>
+                      ))}
+                  </optgroup>
+                ))}
+              </select>
+            </label>
+
+            <p className="prefs-hint">
+              Applies to Nemotron 3.5 and changes live. The English-only model
+              ignores it.
+            </p>
+
+            <label className="prefs-label prefs-checkbox-label">
+              <input
+                type="checkbox"
+                checked={settings.nemotron_diarization}
+                onChange={(e) => update("nemotron_diarization", e.target.checked)}
+                disabled={!nemotronSelected}
+              />
+              Identify speakers
+            </label>
+
+            <label className="prefs-label">
+              Diarization Model
+              <div className="prefs-row">
+                <input
+                  type="text"
+                  value={settings.diarization_model_path}
+                  onChange={(e) => update("diarization_model_path", e.target.value)}
+                  disabled={!diarizationControlsEnabled}
+                  className="prefs-input prefs-input-wide"
+                />
+                <button
+                  className="prefs-browse-btn"
+                  onClick={handleBrowseDiarizationModel}
+                  disabled={!diarizationControlsEnabled}
+                >
+                  Browse...
+                </button>
+              </div>
+            </label>
+
+            <label className="prefs-label">
+              Speaker Label Latency
+              <select
+                value={settings.diarization_latency}
+                onChange={(e) => update("diarization_latency", e.target.value)}
+                disabled={!diarizationControlsEnabled}
+                className="prefs-select"
+              >
+                {DIARIZATION_LATENCY_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <p className="prefs-hint">
+              Sortformer v3 ONNX. Without the file, Nemotron runs without speaker
+              labels.
+            </p>
           </div>
         )}
       </div>
