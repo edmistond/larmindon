@@ -65,7 +65,7 @@ cd app/src-tauri && cargo check
 
 ## Verification
 
-- Frontend: the vitest suite in `app/` (`transcriptStore.test.ts`).
+- Frontend: `npm test` in `app/` (vitest; `transcriptStore.test.ts`).
 - Engine/ASR: `cargo test` and `bash testdata/check_regression.sh` in
   `larmindon-core` (see its AGENTS.md for when the gate is required).
 - End to end: run the app and check live transcription, then query
@@ -150,7 +150,7 @@ re-sent with `is_final: false` while a backend revises it, then finalized once;
 `text` is always the segment's complete text. Nemotron with diarization emits
 each chunk provisionally with the current speaker, then finalizes it about a
 second later with the diarizer's label. `app/src/transcriptStore.ts` folds
-finalized segments into speaker turns and is unit-tested (`pnpm test`).
+finalized segments into speaker turns and is unit-tested (`npm test` from `app/`).
 
 `get_settings` and `settings-changed` carry the **redacted** settings — the
 Soniox API key is blanked, so it never reaches a webview or the
